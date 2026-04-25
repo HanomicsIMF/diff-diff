@@ -187,10 +187,15 @@ view. Every field below appears as a top-level key in that dict.
       (covers integer dtype and floats that happen to be integer-valued).
     - `is_count_like: bool` - heuristic for count-shaped outcomes:
       `is_integer_valued AND pct_zeros > 0 AND skewness > 0.5 AND
-      n_distinct_values > 2`. When `True`, an OLS DiD on the raw
-      outcome may have well-behaved point estimates but questionable
-      asymptotic SEs; consider `WooldridgeDiD` (QMLE Poisson family)
-      or document the choice. See §5.3 for a worked example.
+      n_distinct_values > 2 AND value_min >= 0`. When `True`, an OLS
+      DiD on the raw outcome may have well-behaved point estimates
+      but questionable asymptotic SEs; consider
+      `WooldridgeDiD(method="poisson")` (QMLE), which estimates the
+      overall ATT as an ASF-based outcome-scale difference (NOT a
+      multiplicative ratio) and rejects negative outcomes at fit
+      time. The non-negativity gate aligns the routing signal with
+      that hard requirement so the estimator will accept the panel.
+      See §5.3 for a worked example.
     - `is_bounded_unit: bool` - all non-NaN values lie in `[0, 1]`.
       When `True` and the linear-DiD point estimate is near the
       boundary of feasible support, interpret with care (the linear
@@ -618,15 +623,22 @@ count-shaped outcome (e.g., number of incidents per unit-period) for
 which linear DiD point estimates are unbiased but asymptotic SEs may
 mislead. `PanelProfile.outcome_shape` exposes the relevant facts:
 
-- `outcome_shape.is_count_like == True` (integer-valued, has zeros,
-  right-skewed, more than two distinct values) - linear-OLS DiD on the
-  raw count works for the point estimate but inference may be off.
-  Consider `WooldridgeDiD` (QMLE Poisson) which estimates the
-  multiplicative effect directly and gives correctly-calibrated SEs
-  under quasi-MLE. Linear-OLS DiD with cluster-robust SEs remains a
-  defensible choice when the count is large enough that the normal
-  approximation holds; the shape field flags the consideration, not a
-  rule. §5.3 walks through this pattern with a concrete profile.
+- `outcome_shape.is_count_like == True` (integer-valued, non-negative,
+  has zeros, right-skewed, more than two distinct values) - linear-OLS
+  DiD on the raw count works for the point estimate but asymptotic SEs
+  assume normal-shaped errors that a right-skewed distribution can
+  violate. Consider `WooldridgeDiD(method="poisson")`, which estimates
+  the overall ATT as an ASF-based outcome-scale difference (per-cell
+  average of `E[exp(η_1)] - E[exp(η_0)]`, Wooldridge 2023; see
+  REGISTRY.md §WooldridgeDiD nonlinear / ASF path) under QMLE, with
+  correctly-calibrated SEs. The headline `overall_att` is a difference
+  on the outcome scale, NOT a multiplicative ratio; a proportional
+  interpretation can be derived post-hoc as `overall_att / E[Y_0]` if
+  desired but is not the estimator's reported scalar. Linear-OLS DiD
+  with cluster-robust SEs remains a defensible choice when the count
+  is large enough that the normal approximation holds; the shape field
+  flags the consideration, not a rule. §5.3 walks through this pattern
+  with a concrete profile.
 - `outcome_shape.is_bounded_unit == True` (values in `[0, 1]`,
   e.g. a proportion) - linear DiD can produce predictions outside
   `[0, 1]` and inference at the boundary is questionable. No
@@ -798,18 +810,26 @@ Reasoning chain:
 
 1. Same staggered-binary narrowing as §5.1 (CS/SA/dCDH/Imputation/
    TwoStage/Stacked/ETWFE/EfficientDiD applicable).
-2. `outcome_shape.is_count_like == True` -> linear-OLS DiD on the
-   raw count gives unbiased point estimates of the additive effect
-   but its asymptotic SEs assume normal-shaped errors, which a
-   right-skewed count distribution violates. `WooldridgeDiD`
-   (`method="poisson"`) estimates the multiplicative
-   (log-link) effect under QMLE with correct asymptotic SEs, and
-   maps onto the staggered design natively.
-3. Decision: fit `WooldridgeDiD(method="poisson")` for the
-   primary estimate; report the multiplicative effect (proportional
-   change) rather than the additive effect. Optionally fit a linear
-   DiD as a robustness check and document which scale the headline
-   uses.
+2. `outcome_shape.is_count_like == True` AND
+   `outcome_shape.value_min >= 0` -> linear-OLS DiD on the raw count
+   gives unbiased point estimates but its asymptotic SEs assume
+   normal-shaped errors that a right-skewed count distribution
+   violates. `WooldridgeDiD(method="poisson")` (QMLE) estimates the
+   overall ATT as an ASF-based outcome-scale difference: the per-cell
+   average of `E[exp(η_1)] - E[exp(η_0)]` (Wooldridge 2023; see
+   REGISTRY.md §WooldridgeDiD nonlinear / ASF path), with
+   correctly-calibrated SEs under quasi-MLE. The Poisson fitter
+   hard-rejects negative outcomes (`y < 0` raises `ValueError` at
+   line ~1105 of `wooldridge.py`), which is why `is_count_like` gates
+   on `value_min >= 0`.
+3. Decision: fit `WooldridgeDiD(method="poisson")` for the primary
+   estimate; report the headline `overall_att` as a difference on the
+   outcome scale (the same units as the count), not as a
+   multiplicative ratio. A proportional / percent-change reading can
+   be derived post-hoc by dividing the ATT by an estimate of
+   `E[Y_0]`, but the estimator's reported scalar is the difference.
+   Optionally fit a linear DiD as a robustness check and document
+   that both estimands are on the same scale.
 4. Caveat: when the outcome includes structural zeros that violate
    Poisson conditional moments (overdispersion), consider negative
    binomial QMLE or a hurdle model; the current suite does not

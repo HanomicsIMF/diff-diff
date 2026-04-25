@@ -83,6 +83,62 @@ def test_autonomous_contains_worked_examples_section():
     )
 
 
+def test_autonomous_count_outcome_uses_asf_outcome_scale_estimand():
+    """§4.11 and §5.3 must describe `WooldridgeDiD(method="poisson")`'s
+    `overall_att` as an ASF-based outcome-scale difference (matching the
+    estimator at `wooldridge.py:1225` and the reporting helper at
+    `_reporting_helpers.py:262-281`), NOT as a multiplicative /
+    proportional / log-link effect. An agent following an example that
+    described the headline as "multiplicative" would misreport the
+    scalar - the library's reported `overall_att` is `E[exp(η_1)] -
+    E[exp(η_0)]`, a difference on the natural outcome scale.
+
+    Guards against regressing the wording back to "multiplicative
+    effect" / "proportional change" framing. Multiplicative
+    interpretations may appear in the guide as a clearly-marked
+    derived post-hoc reading, but never as the description of the
+    estimator's reported `overall_att`."""
+    text = get_llm_guide("autonomous")
+    # Locate §4.11 and §5.3 blocks; check that within them the Poisson
+    # path is described with ASF / outcome-scale wording, NOT as the
+    # estimator's reported scalar being multiplicative or proportional.
+    sec_4_11_start = text.index("### §4.11 Outcome-shape considerations")
+    sec_4_11_end = text.index("## §5. Worked examples")
+    sec_4_11 = text[sec_4_11_start:sec_4_11_end]
+
+    sec_5_3_start = text.index("### §5.3 Count-shaped outcome")
+    sec_5_3_end = text.index("## §6. Post-fit validation utilities")
+    sec_5_3 = text[sec_5_3_start:sec_5_3_end]
+
+    forbidden_phrases = (
+        "multiplicative effect under qmle",
+        "estimates the multiplicative effect",
+        "multiplicative (log-link) effect",
+        "report the multiplicative effect",
+        "report the multiplicative",
+    )
+    for section_name, body in (("§4.11", sec_4_11), ("§5.3", sec_5_3)):
+        lowered = body.lower()
+        for phrase in forbidden_phrases:
+            assert phrase not in lowered, (
+                f"{section_name} of the autonomous guide describes the "
+                f"WooldridgeDiD Poisson `overall_att` with the phrase "
+                f"{phrase!r}; the estimator returns an ASF-based "
+                f"outcome-scale difference (`E[exp(η_1)] - E[exp(η_0)]`), "
+                f"not a multiplicative ratio. See `wooldridge.py:1225` "
+                f"and `_reporting_helpers.py:262-281`."
+            )
+
+    # Positive: each block must explicitly anchor the estimand to the
+    # ASF / outcome-scale framing so future edits can't silently weaken
+    # the description.
+    assert "ASF" in sec_5_3, "§5.3 must reference the ASF interpretation"
+    assert "outcome scale" in sec_5_3.lower(), (
+        "§5.3 must label the WooldridgeDiD `overall_att` as an "
+        "outcome-scale quantity to prevent multiplicative-ratio drift."
+    )
+
+
 def test_autonomous_worked_examples_avoid_recommender_language():
     """Worked examples must mirror the rest of the guide's discipline:
     no prescriptive language in the example reasoning. Multiple paths

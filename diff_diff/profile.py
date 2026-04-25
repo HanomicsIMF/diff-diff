@@ -637,12 +637,20 @@ def _compute_outcome_shape(valid: pd.Series, outcome_dtype_kind: str) -> Optiona
             skewness = float(m3 / (std**3))
             excess_kurtosis = float(m4 / (m2**2) - 3.0)
 
+    # Non-negativity is part of the contract: `is_count_like == True`
+    # is the routing signal toward `WooldridgeDiD(method="poisson")`,
+    # which hard-rejects negative outcomes at fit time
+    # (`wooldridge.py:1105` raises `ValueError` on `y < 0`). Without the
+    # `value_min >= 0` guard, a right-skewed integer outcome with zeros
+    # and some negatives could set `is_count_like=True` and steer an
+    # agent toward an estimator that will then refuse to fit.
     is_count_like = bool(
         is_integer_valued
         and pct_zeros > 0.0
         and skewness is not None
         and skewness > 0.5
         and n_distinct > 2
+        and value_min >= 0.0
     )
 
     return OutcomeShape(

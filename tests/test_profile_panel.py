@@ -927,6 +927,50 @@ def test_outcome_shape_binary_outcome_not_count_like():
     assert shape.n_distinct_values == 2
 
 
+def test_outcome_shape_count_like_excludes_negative_support():
+    """`is_count_like` is the routing signal toward
+    `WooldridgeDiD(method="poisson")`, which raises `ValueError` on
+    negative outcomes (`wooldridge.py:1105`). The heuristic must
+    therefore gate on `value_min >= 0`: a right-skewed integer outcome
+    with zeros AND some negative values must NOT set `is_count_like`,
+    even though the other four conditions (integer-valued, has zeros,
+    skewness > 0.5, > 2 distinct values) are satisfied. Otherwise the
+    autonomous-guide §5.3 reasoning chain would steer agents toward an
+    estimator that will then refuse to fit the panel."""
+    rng = np.random.default_rng(37)
+    first_treat = {u: 2 for u in range(101, 201)}
+
+    # Mix Poisson with a small share of negative integers - integer-valued,
+    # has zeros (Poisson(0.5) yields ~60% zeros), and right-skewed; but
+    # value_min < 0 should kill is_count_like.
+    def _outcome_fn(u, t, tr, _rng):
+        base = int(rng.poisson(0.5 + 0.2 * tr))
+        # 5% of cells become a small negative integer, e.g. -1 or -2.
+        if rng.random() < 0.05:
+            return -int(rng.integers(1, 3))
+        return base
+
+    df = _make_panel(
+        n_units=200,
+        periods=range(0, 4),
+        first_treat=first_treat,
+        outcome_fn=_outcome_fn,
+    )
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    shape = profile.outcome_shape
+    assert shape is not None
+    assert shape.value_min < 0, "fixture must include some negative outcomes"
+    assert shape.is_integer_valued is True
+    assert shape.pct_zeros > 0.1
+    assert shape.skewness is not None
+    assert shape.is_count_like is False, (
+        "is_count_like must be False when value_min < 0; otherwise an "
+        "agent following the §5.3 worked example would route the panel "
+        "to WooldridgeDiD(method='poisson'), which raises ValueError on "
+        "negative outcomes."
+    )
+
+
 def test_outcome_shape_continuous_normal():
     """Normally-distributed float outcome must have is_integer_valued=False,
     is_count_like=False, is_bounded_unit=False (signed values exit [0,1])."""
