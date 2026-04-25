@@ -225,7 +225,7 @@ Check for **missing related changes**:
 - Tests for new/changed functionality
 - `__init__.py` export updates
 - `get_params()` / `set_params()` updates for new parameters
-- Documentation updates (README, RST, tutorials, CONTRIBUTING.md, CLAUDE.md if design patterns change)
+- Documentation updates (`diff_diff/guides/llms.txt` for new public-API surfaces, `docs/api/*.rst`, `docs/references.rst` for new citations, tutorials, CONTRIBUTING.md, CLAUDE.md if design patterns change). README updates only if the change affects the landing page (new estimator catalog one-liner, hero/badges/tagline, top-level capability paragraph) - per CONTRIBUTING.md, README is not the place for usage examples or per-estimator sections.
 - For bug fixes: did the plan grep for ALL occurrences of the pattern, or just the one reported?
 
 Check for **unnecessary additions**:

@@ -94,7 +94,7 @@ sources:
       - path: docs/tutorials/09_real_world_examples.ipynb
         type: tutorial
       - path: README.md
-        section: "DifferenceInDifferences"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "DifferenceInDifferences"
@@ -135,7 +135,7 @@ sources:
         type: tutorial
         note: "CallawaySantAnna survey examples"
       - path: README.md
-        section: "CallawaySantAnna"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "CallawaySantAnna"
@@ -181,7 +181,7 @@ sources:
         type: tutorial
         note: "SunAbraham comparison section"
       - path: README.md
-        section: "SunAbraham"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "SunAbraham"
@@ -204,7 +204,7 @@ sources:
       - path: docs/tutorials/11_imputation_did.ipynb
         type: tutorial
       - path: README.md
-        section: "ImputationDiD"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "ImputationDiD"
@@ -225,7 +225,7 @@ sources:
       - path: docs/tutorials/12_two_stage_did.ipynb
         type: tutorial
       - path: README.md
-        section: "TwoStageDiD"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "TwoStageDiD"
@@ -246,7 +246,7 @@ sources:
       - path: docs/tutorials/15_efficient_did.ipynb
         type: tutorial
       - path: README.md
-        section: "EfficientDiD"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "EfficientDiD"
@@ -268,7 +268,7 @@ sources:
       - path: docs/api/chaisemartin_dhaultfoeuille.rst
         type: api_reference
       - path: README.md
-        section: "ChaisemartinDHaultfoeuille"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "ChaisemartinDHaultfoeuille"
@@ -302,7 +302,7 @@ sources:
       - path: docs/tutorials/14_continuous_did.ipynb
         type: tutorial
       - path: README.md
-        section: "ContinuousDiD"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "ContinuousDiD"
@@ -326,7 +326,7 @@ sources:
       - path: docs/tutorials/03_synthetic_did.ipynb
         type: tutorial
       - path: README.md
-        section: "SyntheticDiD"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "SyntheticDiD"
@@ -352,7 +352,7 @@ sources:
       - path: docs/tutorials/08_triple_diff.ipynb
         type: tutorial
       - path: README.md
-        section: "TripleDifference"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "TripleDifference"
@@ -373,7 +373,7 @@ sources:
       - path: docs/tutorials/13_stacked_did.ipynb
         type: tutorial
       - path: README.md
-        section: "StackedDiD"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "StackedDiD"
@@ -394,7 +394,7 @@ sources:
       - path: docs/tutorials/16_wooldridge_etwfe.ipynb
         type: tutorial
       - path: README.md
-        section: "WooldridgeDiD"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "WooldridgeDiD"
@@ -415,7 +415,7 @@ sources:
       - path: docs/tutorials/10_trop.ipynb
         type: tutorial
       - path: README.md
-        section: "TROP"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "TROP"
@@ -438,7 +438,7 @@ sources:
       - path: docs/tutorials/05_honest_did.ipynb
         type: tutorial
       - path: README.md
-        section: "HonestDiD"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "HonestDiD"
@@ -455,7 +455,7 @@ sources:
       - path: docs/api/bacon.rst
         type: api_reference
       - path: README.md
-        section: "BaconDecomposition"
+        section: "Estimators (one-line catalog entry)"
         type: user_guide
 
   # ── Diagnostics & analysis ───────���─────────────────────────────────
@@ -493,7 +493,7 @@ sources:
       - path: docs/api/business_report.rst
         type: api_reference
       - path: README.md
-        section: "BusinessReport"
+        section: "For Data Scientists (one-line mention)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "BusinessReport"
@@ -508,7 +508,7 @@ sources:
       - path: docs/api/diagnostic_report.rst
         type: api_reference
       - path: README.md
-        section: "DiagnosticReport"
+        section: "For Data Scientists (one-line mention)"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "DiagnosticReport"
@@ -543,7 +543,7 @@ sources:
       - path: docs/tutorials/16_survey_did.ipynb
         type: tutorial
       - path: README.md
-        section: "Survey"
+        section: "Survey Support"
         type: user_guide
       - path: diff_diff/guides/llms-full.txt
         section: "Survey"

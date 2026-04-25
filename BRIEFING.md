@@ -1,59 +1,80 @@
-# dcdh-by-path — Briefing
+# docs-refresh — Briefing
 
-## The ask
+## The goal
 
-Clément de Chaisemartin (dCDH author) suggested implementing the `by_path`
-option from R's `did_multiplegt_dyn`. It disaggregates the dynamic event-study
-by observed treatment trajectory so practitioners can compare paths like:
+Two-part documentation sweep, sequenced as one initiative across multiple PRs:
 
-- `(0,1,0,0)` — one pulse
-- `(0,1,1,0)` — two periods on, then off
-- `(0,1,1,1)` — three periods on, then off
-- `(0,1,0,1)` vs `(0,1,1,0)` — sequencing
+1. **README.md aggressive trim**
+2. **RTD staleness audit + targeted fixes**
 
-Use case: "is a single pulse enough, or do you need sustained exposure?"
+Tutorial work is OUT OF SCOPE — that's a separate worktree (`dcdh-tutorial`).
 
-## Where we stand today
+## Why now
 
-`diff_diff/chaisemartin_dhaultfoeuille.py` implements `ChaisemartinDHaultfoeuille`.
+Recent releases (3.0.x → 3.3.0) shipped a lot of new surface area without
+proportional README/RTD updates:
 
-- Supports reversible on/off treatments (the only estimator in the library
-  that does)
-- **Currently drops multi-switch groups by default** (`drop_larger_lower=True`) —
-  exactly the groups `by_path` wants to keep and compare
-- Stratifies by direction cohort (`DID_+`, `DID_-`, `S_g = sign(Δ)`) but not
-  by trajectory
-- No `by_path`, `treatment_path`, or path-enumeration code exists anywhere
-- Not on ROADMAP.md; not in TODO.md
+- HeterogeneousAdoptionDiD (entirely new estimator, multi-phase)
+- profile_panel() + llms-autonomous.txt
+- dCDH by_path + R parity
+- SDiD survey support across all three variance methods
+- BR/DR target_parameter (schema 2.0)
+- TROP backend parity
 
-## Shape of the work
+README is too long for skim consumption (SEO + first-impression problem).
+RTD likely has stale pages, missing API references, and outdated examples.
 
-1. Parameter: likely `by_path: bool = False` (implies `drop_larger_lower=False`)
-2. Enumerate unique treatment histories `(D_{g,1}, …, D_{g,T})` per group;
-   optionally accept a user-specified subset of paths of interest
-3. Per-path `DID_{g,l}` aggregation with influence-function SEs per path
-4. Result container extension: `path_effects` dict keyed by trajectory tuple,
-   each holding ATT + SE + CI vectors
-5. Decide interaction with `drop_larger_lower`: probably forbid both being
-   non-default simultaneously, or have `by_path` override
-6. REGISTRY.md section on path-heterogeneity methodology + deviation notes
-7. Methodology reference: `did_multiplegt_dyn` manual §on `by_path`; dCDH
-   dynamic paper for the `DID_{g,l}` building block (already cited in REGISTRY)
+## Sequencing
 
-## Open methodology questions (for plan mode)
+### PR 1 — README aggressive trim
+Target a tight shape:
+- One-line value prop
+- Install (`pip install diff-diff`)
+- Minimal working example (5-10 lines, one estimator)
+- Estimator-list one-liner with link to RTD for full reference
+- Citation + license
 
-- Which paths are enumerable? All observed, or user-specified subset only?
-  R's default behavior on cardinality control is worth checking.
-- How does path stratification interact with the current cohort pooling
-  `(D_{g,1}, F_g, S_g)` used for variance recentering — does it still apply
-  per path?
-- Placebo and TWFE diagnostics: compute per-path or overall only?
-- Bootstrap interaction: per-path bootstrap blocks vs single bootstrap with
-  per-path aggregation
+Aggressive cuts. Anything that belongs on RTD goes to RTD (or stays there if
+already there). Don't try to be the docs.
 
-## Before starting
+Out of scope: rewriting RTD content that the README links to.
 
-- Pull the R manual section on `by_path` for `did_multiplegt_dyn` — the option
-  spec there is load-bearing; don't infer from usage examples alone
-- Methodology changes: consult `docs/methodology/REGISTRY.md` first
-- New estimator surface → budget ~12-20 CI review rounds
+### PR 2+ — RTD staleness audit + fixes
+
+Audit step (read-only):
+- Walk `docs/` and identify pages missing post-3.0.x estimators / surfaces
+- Cross-reference `docs/doc-deps.yaml` to surface known dependency drift
+- Categorize: missing API page, stale example, broken link, outdated narrative
+
+Then fix in scoped PRs (one PR per coherent batch — e.g., "Add HAD API reference
++ choosing-estimator entry", "Refresh practitioner decision tree for 3.3.0").
+
+## What to read first
+
+- `README.md` (current state, length)
+- `docs/index.rst` (RTD entry point)
+- `docs/doc-deps.yaml` (source-to-doc dependency map)
+- `docs/api/` (API reference pages — what's missing)
+- `docs/methodology/REGISTRY.md` (don't reformat; just cross-check it's
+  referenced from RTD where appropriate)
+- `CLAUDE.md` "Documenting Deviations" section (label patterns, don't violate)
+
+## Memory rules to honor
+
+- Hyphens, not em dashes (writing style)
+- No competitor mentions in formal docs (ROADMAP / user-facing)
+- No version numbers as RTD section headings
+- diff-diff perspective (not neutral comparisons)
+- Tutorial-scope discipline does NOT apply here — this is reference docs
+
+## Out of scope
+
+- New tutorials (separate `dcdh-tutorial` worktree owns DCDH; HAD tutorial queued after)
+- ROADMAP.md restructuring (separate concern)
+- BR/DR positioning beyond "experimental preview" framing (per memory)
+
+## Cleanup note
+
+This BRIEFING.md was accidentally committed to main from a prior worktree
+session. Long-term, drop it from main and add to .gitignore so worktree
+briefings stay local.

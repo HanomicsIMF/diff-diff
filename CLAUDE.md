@@ -114,6 +114,21 @@ category (`Methodology/Correctness`, `Performance`, or `Testing/Docs`):
 |-------|----------|----|----------|
 | Description of deferred item | `file.py` | #NNN | Medium/Low |
 
+## README discipline
+
+`README.md` is a **landing page**, not the documentation. Target ~190 lines. The 3,119-line README that existed before the 2026-04 docs refresh grew because workflow conventions told contributors to add to README on every change.
+
+When adding new functionality, the source of truth is:
+
+- **`diff_diff/guides/llms.txt`** for the AI-agent contract (one-line catalog entry per estimator with paper citation + RTD link). This file is bundled in the wheel and published on RTD via `docs/conf.py` `html_extra_path`.
+- **`docs/api/*.rst`** for full API reference.
+- **`docs/references.rst`** for scholarly citations.
+- **`docs/tutorials/*.ipynb`** for hands-on examples.
+- **`CHANGELOG.md`** for release notes.
+- **`README.md`** for ONE LINE in the `## Estimators` flat catalog (or `## Diagnostics & Sensitivity` for diagnostic-class features). Do NOT add usage examples, parameter tables, per-estimator sections, or full bibliographies.
+
+`/docs-impact` and `/docs-check` enforce these surfaces. See `CONTRIBUTING.md` "README is a landing page, not the docs" for the full convention.
+
 ## Testing Conventions
 
 - **`ci_params` fixture** (session-scoped in `conftest.py`): Use `ci_params.bootstrap(n)` and
