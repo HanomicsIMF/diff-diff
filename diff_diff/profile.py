@@ -533,11 +533,19 @@ def _classify_treatment(
     # has_never_treated has a single well-defined meaning across binary
     # and continuous numeric treatment: some unit has treatment == 0 in
     # every observed non-NaN row. For binary this is the clean-control
-    # group; for continuous this is the zero-dose control required by
-    # ContinuousDiD (P(D=0) > 0).
+    # group; for continuous this is the zero-dose control proxy used
+    # alongside ContinuousDiD's `P(D=0) > 0` requirement.
+    #
+    # On binary panels (values in {0, 1}), `unit_max == 0` is equivalent
+    # to "all observed values are 0". On continuous panels with negative
+    # dose support, that equivalence breaks: a unit with path `[-1, 0]`
+    # would falsely satisfy `unit_max == 0` even though no row is a
+    # zero-dose control. Check both endpoints (`unit_max == 0` AND
+    # `unit_min == 0`) to enforce the documented contract — for any
+    # numeric panel this is exactly "every observed dose is 0".
     unit_max = df.groupby(unit)[treatment].max().to_numpy()
     unit_min = df.groupby(unit)[treatment].min().to_numpy()
-    has_never_treated = bool(np.any(unit_max == 0))
+    has_never_treated = bool(np.any((unit_max == 0) & (unit_min == 0)))
 
     is_binary_valued = values_set <= {0, 1, 0.0, 1.0}
     # has_always_treated has binary-only semantics: "unit is treated in

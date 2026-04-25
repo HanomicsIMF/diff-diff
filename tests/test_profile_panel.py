@@ -477,6 +477,38 @@ def test_continuous_zero_dose_controls_flag_has_never_treated():
     assert profile.has_always_treated is False
 
 
+def test_continuous_negative_then_zero_does_not_count_as_never_treated():
+    """Regression: on continuous panels with negative dose support, a
+    unit path like `[-1, 0]` has `groupby(unit).max() == 0` but is NOT
+    a zero-dose never-treated control (`-1` is non-zero). The implementation
+    must check both endpoints (`unit_max == 0` AND `unit_min == 0`) so
+    `has_never_treated` matches the documented contract: "some unit has
+    treatment == 0 in every observed non-NaN row." The autonomous guide's
+    ContinuousDiD preflight uses this field as the `P(D=0) > 0` proxy, so
+    a false-positive here would silently mislead an agent about control
+    availability."""
+    rng = np.random.default_rng(7)
+    rows = []
+    for u in range(1, 21):
+        for t in range(4):
+            if u <= 5:
+                # Mixed negative/zero path - max is 0 but min < 0;
+                # must NOT count as never-treated.
+                dose = -1.0 if t < 2 else 0.0
+            else:
+                dose = float(rng.uniform(0.5, 3.0))
+            rows.append({"u": u, "t": t, "tr": dose, "y": float(rng.normal())})
+    df = pd.DataFrame(rows)
+    profile = profile_panel(df, unit="u", time="t", treatment="tr", outcome="y")
+    assert profile.treatment_type == "continuous"
+    assert profile.has_never_treated is False, (
+        "Unit path [-1, -1, 0, 0] has unit_max == 0 but is not a "
+        "zero-dose never-treated control (some rows are negative). "
+        "Profile must enforce the documented contract: 'treatment == 0 "
+        "in every observed non-NaN row' (i.e., unit_min == unit_max == 0)."
+    )
+
+
 def test_guide_api_strings_resolve_against_public_api():
     """Sanity-check that every estimator referenced in the autonomous guide
     exists in the public API, plus the `hausman_pretest` classmethod location
