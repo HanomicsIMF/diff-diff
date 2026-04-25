@@ -2995,20 +2995,19 @@ class TestScaleEquivariance:
         # weights$omega[ind[1:N0_placebo]])`` warm-start. Drift from
         # the cold-start capture (0.29385822261006445) is the same
         # finite-iter convergence-pattern shift as the bootstrap warm-
-        # start landed in PR #349 — strict-convexity guarantees the
-        # converged answer is unique, but the 100-iter pre-sparsify
-        # pass produces different sparsification under uniform vs warm
-        # init on a handful of draws. Warm-start matches R at machine
+        # start landed in PR #349. Warm-start matches R at machine
         # precision (test_placebo_se_matches_r in
-        # TestJackknifeSERParity). Capture: Linux/OpenBLAS (CI runner) —
-        # warm-start carries ``unit_weights`` (fit-time FW output) into
-        # per-draw init, which is platform-divergent at sub-ULP from
-        # BLAS reduction order; across 200 draws with path-dependent
-        # sparsification the SE diverges ~1e-9 between Apple Accelerate
+        # TestJackknifeSERParity). Captured value is platform-divergent
+        # at sub-ULP — warm-start carries ``unit_weights`` (fit-time
+        # FW output) into per-draw init, and BLAS reduction-order
+        # differences accumulate across 200 draws with path-dependent
+        # sparsification to ~1e-9 SE divergence between Apple Accelerate
         # (macOS local: 0.293840360160448) and OpenBLAS (Linux CI:
-        # 0.2938403592163006). Linux value pinned because CI is the
-        # gating surface; macOS local fits will drift at ~1e-9 — that
-        # delta is finite-iter FW path-dependence, not a numerical bug.
+        # 0.2938403592163006). The placebo row's SE assertion is
+        # therefore loosened to ``rel=1e-7`` below; bit-identity
+        # protection moves to ``test_placebo_se_matches_r``, which
+        # bypasses the platform-divergent fit-time path through a test
+        # seam. Pinned value is the Linux/OpenBLAS capture.
         "placebo":   (4.603349837478791,   0.2938403592163006, 0.004975124378109453, 200),
         # bootstrap = paper-faithful refit with R-default warm-start: FW is
         # initialized with ``sum_normalize(unit_weights[boot_control_idx])``
@@ -3065,7 +3064,14 @@ class TestScaleEquivariance:
             warnings.simplefilter("ignore", UserWarning)
             r = self._fit(data, variance_method)
         assert r.att == pytest.approx(att0, rel=1e-14)
-        assert r.se == pytest.approx(se0, rel=1e-14)
+        # Placebo SE is warm-start-driven (PR #369) and the per-draw FW
+        # init carries platform-divergent ``unit_weights``; ~1e-9 macOS-
+        # vs-Linux drift on 200 draws makes bit-identity unattainable.
+        # Bit-identity protection moves to ``test_placebo_se_matches_r``
+        # (TestJackknifeSERParity). Bootstrap and jackknife stay at the
+        # original gate; their paths don't accumulate the same way.
+        se_rel = 1e-7 if variance_method == "placebo" else 1e-14
+        assert r.se == pytest.approx(se0, rel=se_rel)
         assert r.p_value == pytest.approx(p0, rel=1e-14)
         assert len(r.placebo_effects) == n0
 
