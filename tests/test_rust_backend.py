@@ -100,6 +100,57 @@ class TestRustBackend:
         weights2 = generate_bootstrap_weights_batch(100, 50, "rademacher", 43)
         assert not np.array_equal(weights1, weights2)
 
+    def test_bootstrap_weights_bit_identity_snapshot(self):
+        """Pin fixed-seed bootstrap weight output byte-for-byte.
+
+        Regression guard against silent RNG output drift across
+        `rand` / `rand_xoshiro` crate upgrades. Distributional moment
+        tests would not catch a byte shift that preserves the
+        distribution (e.g. `rand 0.9`'s `random_range` algorithm
+        change relative to `rand 0.8`'s `gen_range`).
+
+        If this test fails after a Rust dependency bump, the byte stream
+        has shifted. Decide deliberately whether to accept the new
+        baseline (regenerate these values) or pin to a compatible
+        crate version.
+        """
+        from diff_diff._rust_backend import generate_bootstrap_weights_batch
+
+        # Captured under rand 0.10 + rand_xoshiro 0.8 with seed=42.
+        # Rademacher and Mammen bytes match rand 0.8 + rand_xoshiro 0.6;
+        # Webb bytes shifted in the rand 0.9 random_range algorithm change.
+        expected = {
+            "rademacher": np.array(
+                [
+                    [1.0, -1.0, 1.0, 1.0],
+                    [-1.0, 1.0, 1.0, 1.0],
+                ]
+            ),
+            "mammen": np.array(
+                [
+                    [1.618033988749895, -0.6180339887498949, 1.618033988749895, -0.6180339887498949],
+                    [-0.6180339887498949, -0.6180339887498949, 1.618033988749895, 1.618033988749895],
+                ]
+            ),
+            "webb": np.array(
+                [
+                    [1.0, -1.0, 1.224744871391589, 1.0],
+                    [-1.0, 0.7071067811865476, 1.224744871391589, 1.224744871391589],
+                ]
+            ),
+        }
+        for weight_type, expected_arr in expected.items():
+            actual = generate_bootstrap_weights_batch(2, 4, weight_type, 42)
+            # Strict bit-identity: the snapshot values are either exact
+            # (Rademacher = +/-1.0) or computed once via correctly-rounded
+            # IEEE 754 sqrt in Rust (Mammen, Webb), so cross-platform
+            # bit-equality holds on conformant hardware.
+            np.testing.assert_array_equal(
+                actual,
+                expected_arr,
+                err_msg=f"{weight_type} bootstrap weights drifted from pinned baseline",
+            )
+
     # =========================================================================
     # Synthetic Weight Tests
     # =========================================================================
