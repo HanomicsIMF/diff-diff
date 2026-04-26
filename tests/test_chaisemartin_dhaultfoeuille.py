@@ -6660,16 +6660,16 @@ class TestByPathControls:
             f"panel: {deviation_msgs}"
         )
 
-    def test_single_baseline_heterogeneous_F_g_no_warning_and_matches_r(self):
-        """Pin the precise parity condition: single-baseline switcher
-        panel with HETEROGENEOUS ``F_g`` across paths produces (a) no
-        multi-baseline UserWarning and (b) per-path point estimates that
-        match R bit-exactly. Uses the
+    def test_single_baseline_heterogeneous_F_g_does_not_warn(self):
+        """Pin the precise warning condition: single-baseline switcher
+        panel with HETEROGENEOUS ``F_g`` across paths must NOT trigger
+        the multi-baseline R-deviation warning, and the fit must
+        produce finite per-path effects. Uses the
         ``multi_path_reversible_by_path_controls`` golden-value scenario,
         whose switchers all share ``D_{g,1}=0`` while ``F_g`` spans
         [0..6] across 4 distinct observed paths.
 
-        Why this is the right parity condition (not just a global
+        Why this is the right warning condition (not just a global
         baseline check): R's per-path subset
         (``R/R/did_multiplegt_dyn.R`` lines 401-405) includes
         ``yet_to_switch=1`` rows with matching baseline regardless of
@@ -6678,7 +6678,17 @@ class TestByPathControls:
         switchers with matching baseline + all rows of never-switchers
         with matching baseline) — bit-identical to our global first-
         stage sample under single-baseline conditions, even when ``F_g``
-        and path identity vary across switchers."""
+        and path identity vary across switchers.
+
+        The actual numeric R-parity assertion (rtol ~1e-11 on per-path
+        point estimates) lives in
+        ``tests/test_chaisemartin_dhaultfoeuille_parity.py::TestDCDHDynRParityByPathControls::test_parity_multi_path_reversible_by_path_controls``,
+        which fits the same scenario and compares cell-by-cell against
+        the R-generated golden values. This test deliberately does NOT
+        duplicate that numeric check; it locks the warning-suppression
+        invariant on the same fixture so future changes to either the
+        warning predicate or the parity scenario keep both surfaces
+        coherent."""
         data = _load_by_path_controls_scenario()
 
         # Sanity: panel has multiple distinct switcher F_g values but a
@@ -6732,12 +6742,12 @@ class TestByPathControls:
             "heterogeneity), so this scenario must NOT trigger the warning."
         )
 
-        # Locked numeric checks: per-path point estimates from this fit
-        # match the R `did_multiplegt_dyn(..., by_path=3, controls="X1")`
-        # output to rtol ~1e-11 on this scenario (the parity test in
-        # `test_chaisemartin_dhaultfoeuille_parity.py::TestDCDHDynRParityByPathControls`
-        # asserts this against the golden values; here we lock the
-        # internal-only invariant that the estimates are produced).
+        # Lock the local invariant that the fit produces non-empty
+        # finite per-path estimates on this scenario. The numeric R-
+        # parity assertion (per-path point estimates within rtol ~1e-11
+        # of R) is locked separately in
+        # `tests/test_chaisemartin_dhaultfoeuille_parity.py::TestDCDHDynRParityByPathControls`
+        # against the golden values.
         assert res.path_effects is not None and len(res.path_effects) >= 1
         for path, entry in res.path_effects.items():
             for l_h, vals in entry["horizons"].items():
