@@ -49,14 +49,12 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
    - **``weights=np.ndarray`` shortcut (deprecated)** - continuous paths
      reuse the CCT-2014 SE; the mass-point path uses an analytical
      weighted 2SLS sandwich (``classical`` / ``hc1``; CR1 when
-     ``cluster=`` is supplied; ``hc2`` / ``hc2_bm`` raise
-     ``NotImplementedError`` pending a 2SLS-specific leverage
-     derivation). The mass-point + ``aggregate="event_study"`` +
-     ``cband=True`` sub-path additionally rejects an effective
-     ``classical`` vcov (so plain ``cluster=`` with the default
-     ``robust=False`` triggers the classical-default trap below;
-     pass ``vcov_type="hc1"`` or ``robust=True`` to use CR1 there).
-     Yields ``variance_formula="pweight"`` / ``"pweight_2sls"``.
+     ``cluster=`` is supplied, except ``cluster=`` +
+     ``aggregate="event_study"`` + ``cband=True`` is rejected outright
+     regardless of ``vcov_type`` per the cluster-combination deviation
+     below; ``hc2`` / ``hc2_bm`` raise ``NotImplementedError`` pending a
+     2SLS-specific leverage derivation). Yields
+     ``variance_formula="pweight"`` / ``"pweight_2sls"``.
    - **``survey_design=SurveyDesign(weights="col", ...)``** (canonical;
      accepts strata / PSU / FPC) - both paths compose Binder (1983)
      Taylor-series linearization with ``df_survey`` threaded into
@@ -99,6 +97,24 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
    explicitly (the constructor default ``robust=False`` maps to
    ``vcov_type="classical"``, which triggers the guard); a
    classical-aligned IF derivation is queued for a follow-up PR.
+
+   **Mass-point cluster-combination deviation.** On
+   ``design="mass_point"``, two clustered weighted paths are rejected
+   outright regardless of ``vcov_type``:
+
+   - ``survey_design=SurveyDesign(...)`` + ``cluster=`` (static and
+     event-study): the survey path composes Binder-TSL variance, which
+     would silently override the CR1 cluster-robust sandwich.
+     Workarounds: ``cluster=`` alone (unweighted CR1), or ``weights=``
+     + ``cluster=`` (weighted-CR1 pweight sandwich), or
+     ``survey_design=`` alone (Binder-TSL). Combined cluster-robust +
+     survey inference is queued for a follow-up PR.
+   - Deprecated ``weights=`` shortcut + ``cluster=`` +
+     ``aggregate="event_study"`` + ``cband=True``: the sup-t bootstrap
+     normalizes HC1-scale perturbations by the CR1 analytical SE,
+     mixing variance families. Workarounds: pass ``cband=False`` (keeps
+     weighted-CR1 per-horizon), or drop ``cluster=`` (keeps
+     weighted-HC1 sup-t).
 
 HeterogeneousAdoptionDiD
 ------------------------
