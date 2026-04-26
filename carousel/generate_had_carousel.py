@@ -886,7 +886,7 @@ class HADCarouselPDF(FPDF):
                 ("(", WHITE),
                 ("design", WHITE),
                 ("=", INDIGO_CODE),
-                ("'auto'", GREEN_CODE),
+                ("'continuous_at_zero'", GREEN_CODE),
                 (").", WHITE),
                 ("fit(", WHITE),
             ],
@@ -976,7 +976,7 @@ class HADCarouselPDF(FPDF):
         features = [
             ("Bias-Corrected CIs", "Calonico-Cattaneo-Farrell\nported in-house"),
             ("Auto Design Detection", "Three identification paths,\none API"),
-            ("Dynamic Event Study", "Per-horizon WAS\nwith pointwise CIs"),
+            ("Dynamic Event Study", "Per-horizon estimates\nwith pointwise CIs"),
             ("Survey Support", "pweights, strata, PSU, FPC\nvia Binder TSL"),
             ("Sup-t Bands", "Simultaneous CIs across\nevent-study horizons"),
             ("Pre-Test Diagnostics", "QUG, Stute, Yatchew-HR,\njoint workflow"),
@@ -1015,7 +1015,7 @@ class HADCarouselPDF(FPDF):
         self.centered_text(40, "Validated against R.", size=42, color=INDIGO)
         self.centered_text(
             82,
-            "Bit-exact end-to-end parity with the de Chaisemartin et al. R package.",
+            "End-to-end match against DIDHAD v2.0.0 on continuous-at-zero designs.",
             size=13,
             bold=False,
             italic=True,
