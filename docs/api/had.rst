@@ -48,9 +48,10 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
      structural-residual 2SLS sandwich. No cross-horizon covariance.
    - **``weights=np.ndarray`` shortcut (deprecated)** - continuous paths
      reuse the CCT-2014 SE; the mass-point path uses an analytical
-     weighted 2SLS sandwich (``classical`` / ``hc1`` only - ``hc2`` /
-     ``hc2_bm`` raise ``NotImplementedError`` pending a 2SLS-specific
-     leverage derivation). Yields ``variance_formula="pweight"`` /
+     weighted 2SLS sandwich (``classical`` / ``hc1``; CR1 when
+     ``cluster=`` is supplied; ``hc2`` / ``hc2_bm`` raise
+     ``NotImplementedError`` pending a 2SLS-specific leverage
+     derivation). Yields ``variance_formula="pweight"`` /
      ``"pweight_2sls"``.
    - **``survey_design=SurveyDesign(weights="col", ...)``** (canonical;
      accepts strata / PSU / FPC) - both paths compose Binder (1983)
@@ -90,9 +91,10 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
    ``compute_survey_if_variance`` and the sup-t bootstrap target
    ``V_HC1`` consistently; mixing it with a classical analytical SE
    would silently report a ``V_HC1``-targeted variance under a
-   ``classical`` label. Use ``vcov_type="hc1"`` (or leave it unset with
-   the default ``robust=True`` mapping); a classical-aligned IF
-   derivation is queued for a follow-up PR.
+   ``classical`` label. Use ``vcov_type="hc1"`` or set ``robust=True``
+   explicitly (the constructor default ``robust=False`` maps to
+   ``vcov_type="classical"``, which triggers the guard); a
+   classical-aligned IF derivation is queued for a follow-up PR.
 
 HeterogeneousAdoptionDiD
 ------------------------

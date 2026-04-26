@@ -556,15 +556,17 @@ silently report a ``V_HC1``-targeted variance under a ``classical`` label.
 
 .. code-block:: python
 
-   # Use the default robust=True (which maps to vcov_type='hc1')
-   est = HeterogeneousAdoptionDiD()  # robust=True by default
-
-   # Or explicitly request HC1
+   # The constructor default `robust=False` maps to `vcov_type='classical'`
+   # and triggers the guard on the mass-point survey path - so plain
+   # `HeterogeneousAdoptionDiD()` is NOT a workaround. Pick one of:
    est = HeterogeneousAdoptionDiD(vcov_type='hc1')
+   # Or equivalently:
+   est = HeterogeneousAdoptionDiD(robust=True)  # maps to vcov_type='hc1'
 
 A classical-aligned IF derivation is queued for a follow-up release; until
-then, ``vcov_type='hc1'`` is the recommended path for survey + mass-point
-fits. See :doc:`api/had` for the full SE-regime contract.
+then, ``vcov_type='hc1'`` (or the equivalent ``robust=True``) is the
+recommended path for survey + mass-point fits. See :doc:`api/had` for the
+full SE-regime contract.
 
 "Panel-only event-study restriction"
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
