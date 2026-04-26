@@ -6944,11 +6944,12 @@ class TestByPathTrendsLinear:
     Validates the gate-lift PR. The first-differencing transform at
     ``chaisemartin_dhaultfoeuille.py:1599-1630`` runs once globally
     BEFORE path enumeration, so per-path raw DID^{fd}_l surfaces on
-    ``path_effects[path][l]`` automatically. The new
+    ``path_effects[path]["horizons"][l]`` automatically. The new
     ``path_cumulated_event_study`` field surfaces the cumulated level
     effect ``delta_l = sum_{l'=1..l} DID^{fd}_{path, l'}`` per path
     (mirrors the global ``linear_trends_effects`` cumulation at
-    ``:3340-3398``).
+    ``:3340-3398``); the cumulated layer is keyed by horizon directly
+    (no ``"horizons"`` wrapper).
 
     R parity for per-path cumulated point estimates is validated
     separately at
