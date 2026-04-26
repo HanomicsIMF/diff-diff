@@ -442,11 +442,12 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         linear trends) -- first-differencing replaces ``Y`` with
         ``Z = Y_t - Y_{t-1}`` once globally before path enumeration,
         so per-path raw second-differences DID^{fd}_{path, l} surface
-        on ``path_effects[path][l]`` automatically. Per-path
+        on ``path_effects[path]["horizons"][l]`` automatically. Per-path
         cumulated level effects ``delta_{path, l} = sum_{l'=1..l}
         DID^{fd}_{path, l'}`` are surfaced on the new
         ``results.path_cumulated_event_study[path][l]`` field
-        (mirroring the global ``linear_trends_effects`` cumulation).
+        (mirroring the global ``linear_trends_effects`` cumulation;
+        inner dict keyed by horizon directly, no ``"horizons"`` wrapper).
         SE on the cumulated layer is the conservative upper bound
         (sum of per-horizon component SEs, NaN-consistent), matching
         the global ``linear_trends_effects`` SE convention. Path

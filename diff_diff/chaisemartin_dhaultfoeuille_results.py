@@ -1419,15 +1419,21 @@ class ChaisemartinDHaultfoeuilleResults:
               ``path``, ``frequency_rank``, ``n_groups``, ``horizon``,
               ``effect``, ``se``, ``t_stat``, ``p_value``,
               ``conf_int_lower``, ``conf_int_upper``, ``n_obs``,
-              ``cband_lower``, ``cband_upper``. The ``horizon`` column
-              takes negative ints for placebo rows when
-              ``placebo=True``. The ``cband_*`` columns mirror the
-              OVERALL ``level="event_study"`` schema (joint sup-t
-              simultaneous bands); they are populated for positive-
-              horizon rows of paths with a finite per-path sup-t crit
-              (``n_bootstrap > 0``) and NaN otherwise (placebo rows,
-              unbanded paths, or the requested-but-empty fallback
-              DataFrame).
+              ``cband_lower``, ``cband_upper``, ``cumulated_effect``,
+              ``cumulated_se``. The ``horizon`` column takes negative
+              ints for placebo rows when ``placebo=True``. The
+              ``cband_*`` columns mirror the OVERALL
+              ``level="event_study"`` schema (joint sup-t simultaneous
+              bands); they are populated for positive-horizon rows of
+              paths with a finite per-path sup-t crit (``n_bootstrap >
+              0``) and NaN otherwise (placebo rows, unbanded paths, or
+              the requested-but-empty fallback DataFrame). The
+              ``cumulated_*`` columns mirror the global
+              ``linear_trends_effects`` cumulation; populated for
+              positive-horizon rows when ``trends_linear=True`` is
+              also set, NaN for placebo rows or non-trends_linear fits
+              (always-present, NaN-when-None — same convention as
+              ``cband_*``).
 
         Returns
         -------

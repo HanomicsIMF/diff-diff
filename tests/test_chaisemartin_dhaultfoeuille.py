@@ -7159,8 +7159,12 @@ class TestByPathTrendsLinear:
         assert "Level_3" in text
 
     def test_per_period_effects_unaffected_by_trends_linear_by_path(self):
-        """Per-period effects are unaffected by the by_path + trends_linear combo
-        beyond what trends_linear alone produces.
+        """``per_period_effects`` is unaffected by the by_path +
+        trends_linear combo. The per-period DID path uses raw ``Y_mat``
+        per the comment at ``chaisemartin_dhaultfoeuille.py:1493-1496``;
+        first-differencing only affects the multi-horizon path. Adding
+        ``by_path`` is a layer on top of multi-horizon, so per-period
+        effects should be bit-identical with vs without by_path.
         """
         data = _by_path_data_with_trends_linear()
         with warnings.catch_warnings():
@@ -7185,16 +7189,39 @@ class TestByPathTrendsLinear:
                 trends_linear=True,
                 L_max=3,
             )
-        # Global event_study under trends_linear is unchanged by adding
-        # by_path (by_path is a layer on top, not a modification).
-        for l_h, no_bp_vals in (res_no_bp.event_study_effects or {}).items():
-            bp_vals = res_bp.event_study_effects[l_h]
-            np.testing.assert_allclose(
-                bp_vals["effect"],
-                no_bp_vals["effect"],
-                rtol=1e-12,
-                err_msg=f"global event_study l={l_h} differs with by_path",
+        # Per-period effects should be bit-identical: by_path doesn't
+        # touch the per-period DID path; trends_linear doesn't either
+        # (per the contract at :1493-1496).
+        no_bp_pp = res_no_bp.per_period_effects
+        bp_pp = res_bp.per_period_effects
+        assert (no_bp_pp is None) == (bp_pp is None), (
+            f"per_period_effects presence differs (no_bp={no_bp_pp is not None} "
+            f"vs bp={bp_pp is not None})"
+        )
+        if no_bp_pp is not None and bp_pp is not None:
+            assert set(no_bp_pp.keys()) == set(bp_pp.keys()), (
+                f"per_period_effects horizon set differs"
             )
+            for t_h in no_bp_pp:
+                for field_name in ("did_plus_t", "did_minus_t"):
+                    if field_name not in no_bp_pp[t_h]:
+                        continue
+                    no_v = no_bp_pp[t_h][field_name]
+                    bp_v = bp_pp[t_h][field_name]
+                    if isinstance(no_v, dict) and "effect" in no_v:
+                        no_v = no_v["effect"]
+                        bp_v = bp_v["effect"]
+                    if no_v is not None and np.isfinite(no_v):
+                        np.testing.assert_allclose(
+                            bp_v,
+                            no_v,
+                            rtol=1e-12,
+                            err_msg=(
+                                f"per_period_effects[{t_h}][{field_name}] "
+                                f"differs under by_path + trends_linear "
+                                f"(no_bp={no_v} vs bp={bp_v})"
+                            ),
+                        )
 
     @pytest.mark.slow
     def test_bootstrap_with_trends_linear_finite_se(self):
@@ -7219,6 +7246,99 @@ class TestByPathTrendsLinear:
                 assert np.isfinite(vals["se"]), (
                     f"path={path} l={l_h}: bootstrap SE not finite"
                 )
+
+    def test_per_path_placebos_with_trends_linear_present(self):
+        """``path_placebo_event_study`` populated under ``by_path +
+        trends_linear + placebo=True`` with finite point estimates and
+        finite SEs on negative-horizon entries (raw per-horizon, NOT
+        cumulated — per the documented R contract). The R-parity test
+        skips negative-horizon rows because of the documented
+        Python-vs-R per-path placebo divergence; this test pins the
+        Python-side population invariant so the surface itself doesn't
+        regress to None / empty / all-NaN.
+        """
+        data = _by_path_data_with_trends_linear()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, placebo=True
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+        assert res.path_placebo_event_study is not None
+        assert len(res.path_placebo_event_study) > 0
+        # At least one path × negative-lag pair should have a finite
+        # point estimate (raw per-horizon, not cumulated). Negative
+        # keys mirror the placebo_event_study convention.
+        any_finite = False
+        for path, lag_dict in res.path_placebo_event_study.items():
+            assert all(k < 0 for k in lag_dict.keys()), (
+                f"path={path}: placebo lag keys must be negative ints"
+            )
+            for lag_k, vals in lag_dict.items():
+                if np.isfinite(vals["effect"]):
+                    any_finite = True
+                    # When effect is finite, SE should also be finite
+                    # (NaN-consistent contract: finite point + NaN SE
+                    # is not allowed)
+                    assert np.isfinite(vals["se"]), (
+                        f"path={path} lag={lag_k}: finite effect "
+                        f"({vals['effect']}) with non-finite SE "
+                        f"({vals['se']})"
+                    )
+        assert any_finite, (
+            "All placebo cells are non-finite; the trends_linear + "
+            "placebo path may have regressed."
+        )
+
+    @pytest.mark.slow
+    def test_sup_t_bands_with_trends_linear_finite_crit(self):
+        """Per-path joint sup-t bands populated under ``by_path +
+        trends_linear + n_bootstrap > 0``. Pins the bootstrap-collector
+        path that consumes the first-differenced ``Y_mat``.
+        """
+        data = _by_path_data_with_trends_linear()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                n_bootstrap=400,
+                seed=42,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+        assert res.path_sup_t_bands is not None
+        any_finite = False
+        for path, info in res.path_sup_t_bands.items():
+            crit = info.get("crit_value", np.nan)
+            if np.isfinite(crit) and crit > 0:
+                any_finite = True
+                break
+        assert any_finite, (
+            "No path produced a finite sup-t crit value under "
+            "trends_linear + bootstrap"
+        )
+        df_bp = res.to_dataframe(level="by_path")
+        positive = df_bp[df_bp["horizon"] > 0]
+        assert positive["cband_lower"].notna().any(), (
+            "No positive-horizon cband rows populated under "
+            "trends_linear + bootstrap"
+        )
 
     @pytest.mark.slow
     def test_bootstrap_cumulated_uses_post_bootstrap_per_horizon_se(self):
@@ -7628,3 +7748,105 @@ class TestByPathTrendsNonparam:
                 assert np.isfinite(vals["se"]), (
                     f"path={path} l={l_h}: bootstrap SE not finite"
                 )
+
+    def test_per_period_effects_unaffected_by_trends_nonparam_by_path(self):
+        """``per_period_effects`` is unaffected by the by_path +
+        trends_nonparam combo. Symmetric pin to the trends_linear
+        version; per-period DID does not consume ``set_ids`` (the
+        set-restriction only affects the multi-horizon path).
+        """
+        data = _by_path_data_with_trends_nonparam()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est_no_bp = ChaisemartinDHaultfoeuille(drop_larger_lower=False)
+            res_no_bp = est_no_bp.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_nonparam="state",
+                L_max=3,
+            )
+            est_bp = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            res_bp = est_bp.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_nonparam="state",
+                L_max=3,
+            )
+        no_bp_pp = res_no_bp.per_period_effects
+        bp_pp = res_bp.per_period_effects
+        assert (no_bp_pp is None) == (bp_pp is None)
+        if no_bp_pp is not None and bp_pp is not None:
+            assert set(no_bp_pp.keys()) == set(bp_pp.keys())
+            for t_h in no_bp_pp:
+                for field_name in ("did_plus_t", "did_minus_t"):
+                    if field_name not in no_bp_pp[t_h]:
+                        continue
+                    no_v = no_bp_pp[t_h][field_name]
+                    bp_v = bp_pp[t_h][field_name]
+                    if isinstance(no_v, dict) and "effect" in no_v:
+                        no_v = no_v["effect"]
+                        bp_v = bp_v["effect"]
+                    if no_v is not None and np.isfinite(no_v):
+                        np.testing.assert_allclose(
+                            bp_v, no_v, rtol=1e-12,
+                            err_msg=(
+                                f"per_period_effects[{t_h}][{field_name}] "
+                                f"differs under by_path + trends_nonparam"
+                            ),
+                        )
+
+    @pytest.mark.slow
+    def test_sup_t_bands_with_trends_nonparam_finite_crit(self):
+        """Per-path joint sup-t bands populated under
+        ``by_path + trends_nonparam + n_bootstrap > 0``. Pins the
+        bootstrap-collector path that consumes the set-restricted IF
+        through the threaded ``set_ids`` parameter.
+        """
+        data = _by_path_data_with_trends_nonparam()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                n_bootstrap=400,
+                seed=42,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_nonparam="state",
+                L_max=3,
+            )
+        # path_sup_t_bands should be populated; at least one path
+        # passes the strict-majority gate from PR #374.
+        assert res.path_sup_t_bands is not None
+        any_finite = False
+        for path, info in res.path_sup_t_bands.items():
+            crit = info.get("crit_value", np.nan)
+            if np.isfinite(crit) and crit > 0:
+                any_finite = True
+                break
+        assert any_finite, (
+            "No path produced a finite sup-t crit value under "
+            "trends_nonparam + bootstrap; the set_ids threading may "
+            "not be reaching the per-path bootstrap collector."
+        )
+        # to_dataframe(level="by_path") cband columns should be
+        # populated for at least one positive-horizon row.
+        df_bp = res.to_dataframe(level="by_path")
+        assert "cband_lower" in df_bp.columns
+        assert "cband_upper" in df_bp.columns
+        positive = df_bp[df_bp["horizon"] > 0]
+        assert positive["cband_lower"].notna().any(), (
+            "No positive-horizon cband rows populated under "
+            "trends_nonparam + bootstrap"
+        )
