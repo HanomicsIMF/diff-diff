@@ -408,10 +408,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         the object of interest) and ``L_max >= 1`` (the path window
         depends on ``L_max``). Binary treatment only — non-binary
         treatment + ``by_path`` is deferred. Also incompatible with
-        ``trends_linear``, ``trends_nonparam``, ``heterogeneity``,
-        ``design2``, ``honest_did``, and ``survey_design`` (each
-        combination raises ``NotImplementedError`` in the current
-        release).
+        ``heterogeneity``, ``design2``, ``honest_did``, and
+        ``survey_design`` (each combination raises
+        ``NotImplementedError`` in the current release).
 
         Compatible with ``controls`` (DID^X residualization) -- the
         per-baseline OLS residualization runs once on first-differenced
@@ -438,6 +437,44 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         diverge — a ``UserWarning`` is emitted at fit-time when this
         configuration is detected. SE inherits the cross-path cohort-
         sharing deviation from R documented for ``path_effects``.
+
+        Compatible with ``trends_linear`` (DID^{fd} group-specific
+        linear trends) -- first-differencing replaces ``Y`` with
+        ``Z = Y_t - Y_{t-1}`` once globally before path enumeration,
+        so per-path raw second-differences DID^{fd}_{path, l} surface
+        on ``path_effects[path][l]`` automatically. Per-path
+        cumulated level effects ``delta_{path, l} = sum_{l'=1..l}
+        DID^{fd}_{path, l'}`` are surfaced on the new
+        ``results.path_cumulated_event_study[path][l]`` field
+        (mirroring the global ``linear_trends_effects`` cumulation).
+        SE on the cumulated layer is the conservative upper bound
+        (sum of per-horizon component SEs, NaN-consistent), matching
+        the global ``linear_trends_effects`` SE convention. Path
+        enumeration runs on the post-first-differenced ``N_mat_fd``:
+        switchers with ``F_g==2`` fail the window-eligibility check
+        and are dropped from path enumeration entirely, so a path
+        whose switchers all have ``F_g < 3`` is silently absent from
+        ``path_effects`` (the existing global ``F_g < 3`` warning
+        still fires). Per-path R parity matches R
+        ``did_multiplegt_dyn(..., by_path, trends_lin)`` on per-path
+        cumulated point estimates under single-baseline panels (R
+        re-runs the per-path full pipeline on each path's restricted
+        subsample; same multi-baseline divergence pattern as
+        ``controls``). **Placebo under trends_linear returns RAW
+        per-horizon values, not cumulated** -- there is no per-path
+        placebo cumulation surface (verified empirically against R
+        via the existing ``joiners_only_trends_lin`` parity scenario).
+
+        Compatible with ``trends_nonparam`` (state-set trends) -- the
+        set membership column is validated and stored once globally
+        (time-invariance, NaN rejection, partition coarseness checks
+        unchanged); per-path analytical SE, bootstrap SE, per-path
+        placebos, and per-path sup-t bands all inherit the
+        set-restricted control pool automatically through the
+        ``set_ids`` parameter threaded through the per-path IF
+        helpers. Per-path R parity matches R
+        ``did_multiplegt_dyn(..., by_path, trends_nonparam)`` on
+        per-path point estimates under single-baseline panels.
 
         Compatible with ``n_bootstrap > 0`` -- the top-k paths are
         enumerated once on the observed data (paths held fixed across
@@ -1010,16 +1047,6 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "by_path requires L_max >= 1. The path window spans "
                     "[F_g - 1, F_g - 1 + L_max] and therefore depends on "
                     "the event-study horizon. Set L_max when calling fit()."
-                )
-            if trends_linear:
-                raise NotImplementedError(
-                    "by_path combined with trends_linear (DID^{fd}) is "
-                    "deferred to a future release."
-                )
-            if trends_nonparam is not None:
-                raise NotImplementedError(
-                    "by_path combined with trends_nonparam (state-set "
-                    "trends) is deferred to a future release."
                 )
             if heterogeneity is not None:
                 raise NotImplementedError(
@@ -2048,6 +2075,9 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         # by_path disaggregation by observed treatment trajectory
         path_effects: Optional[Dict[Tuple[int, ...], Dict[str, Any]]] = None
         path_placebos: Optional[Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]] = None
+        path_cumulated_event_study: Optional[
+            Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]
+        ] = None
         if (
             self.by_path is not None
             and L_max is not None
@@ -2070,7 +2100,30 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 all_groups=all_groups,
                 alpha=self.alpha,
                 df_inference=_inference_df(_df_s_bp, resolved_survey),
+                set_ids=set_ids_arr,
             )
+            # Per-path cumulated layer mirrors the global
+            # linear_trends_effects cumulation when trends_linear=True.
+            # path_effects[path]["horizons"][l] surfaces raw DID^{fd}_l;
+            # path_cumulated_event_study[path][l] surfaces the level
+            # effect delta_l = sum_{l'=1..l} DID^{fd}_{path, l'}.
+            if (
+                _is_trends_linear
+                and path_effects is not None
+                and len(path_effects) > 0
+            ):
+                path_cumulated_event_study = _compute_path_cumulated_event_study(
+                    D_mat=D_mat,
+                    N_mat=N_mat,
+                    first_switch_idx=first_switch_idx_arr,
+                    switch_direction=switch_direction_arr,
+                    L_max=L_max,
+                    by_path=self.by_path,
+                    multi_horizon_dids=multi_horizon_dids,
+                    path_effects=path_effects,
+                    alpha=self.alpha,
+                    df_inference=_inference_df(_df_s_bp, resolved_survey),
+                )
 
         # Phase 2: placebos, normalized effects, cost-benefit delta
         multi_horizon_placebos: Optional[Dict[int, Dict[str, Any]]] = None
@@ -2223,6 +2276,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     multi_horizon_placebos=multi_horizon_placebos,
                     alpha=self.alpha,
                     df_inference=_inference_df(_df_s_bp_pl, resolved_survey),
+                    set_ids=set_ids_arr,
                 )
 
             # Normalized effects DID^n_l (suppressed under trends_linear
@@ -2766,6 +2820,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     eligible_mask_var=eligible_mask_var,
                     multi_horizon_dids=multi_horizon_dids,
                     path_effects=path_effects,
+                    set_ids=set_ids_arr,
                 )
 
             # Sibling collector for per-path backward placebos. Mirrors
@@ -2796,6 +2851,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     eligible_mask_var=eligible_mask_var,
                     multi_horizon_placebos=multi_horizon_placebos,
                     path_placebos=path_placebos,
+                    set_ids=set_ids_arr,
                 )
 
             br = self._compute_dcdh_bootstrap(
@@ -3746,6 +3802,7 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
             ),
             path_effects=path_effects,
             path_placebo_event_study=path_placebos,
+            path_cumulated_event_study=path_cumulated_event_study,
             path_sup_t_bands=(
                 # When by_path + n_bootstrap > 0 is active, surface a
                 # dict (possibly empty) — preserving the documented
@@ -5404,6 +5461,7 @@ def _compute_path_effects(
     all_groups: List[Any],
     alpha: float,
     df_inference: Optional[int] = None,
+    set_ids: Optional[np.ndarray] = None,
 ) -> Optional[Dict[Tuple[int, ...], Dict[str, Any]]]:
     """
     Compute per-path event-study effects using the joiners/leavers IF pattern.
@@ -5489,7 +5547,7 @@ def _compute_path_effects(
             switch_direction=switch_direction,
             T_g=T_g,
             L_max=L_max,
-            set_ids=None,
+            set_ids=set_ids,
             compute_per_period=False,
             switcher_subset_mask=switcher_mask,
         )
@@ -5572,6 +5630,133 @@ def _compute_path_effects(
     return path_effects
 
 
+def _compute_path_cumulated_event_study(
+    D_mat: np.ndarray,
+    N_mat: np.ndarray,
+    first_switch_idx: np.ndarray,
+    switch_direction: np.ndarray,
+    L_max: int,
+    by_path: int,
+    multi_horizon_dids: Dict[int, Dict[str, Any]],
+    path_effects: Dict[Tuple[int, ...], Dict[str, Any]],
+    alpha: float,
+    df_inference: Optional[int] = None,
+) -> Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]:
+    """
+    Per-path cumulated level effects under ``trends_linear=True``.
+
+    Mirrors the global ``linear_trends_effects`` cumulation
+    (``chaisemartin_dhaultfoeuille.py:3340-3398``): for each enumerated
+    path, accumulate per-group running sums of ``DID^{fd}_{g, l'}`` over
+    ``l' = 1..l``, then average over the path's switchers eligible at
+    horizon ``l``. SE is the conservative upper bound (sum of per-horizon
+    component SEs from ``path_effects[path]["horizons"][l']["se"]``,
+    NaN-consistent: if any component SE is non-finite the cumulated SE is
+    NaN). Inference (t-stat, p-value, CI) via ``safe_inference``.
+
+    Returns ``{path: {horizon: {effect, se, t_stat, p_value, conf_int,
+    n_obs}}}`` directly (no ``horizons`` wrapper), aligned with the
+    ``path_placebo_event_study`` and global ``linear_trends_effects``
+    shapes. The outer keys match ``path_effects.keys()``; horizons that
+    have NaN cumulated values still appear (for to_dataframe alignment).
+    R parity: matches R ``did_multiplegt_dyn(..., by_path, trends_lin)``
+    which returns cumulated ``Effect_l`` per path under single-baseline
+    panels (validated against ``joiners_only_trends_lin`` empirically).
+    """
+    from diff_diff.utils import safe_inference
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        selected_paths, path_to_group_mask, _ = _enumerate_treatment_paths(
+            D_mat=D_mat,
+            first_switch_idx=first_switch_idx,
+            N_mat=N_mat,
+            L_max=L_max,
+            by_path=by_path,
+        )
+
+    n_groups_total = D_mat.shape[0]
+    S_arr = switch_direction.astype(float)
+
+    path_cumulated: Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]] = {}
+
+    for path in selected_paths:
+        if path not in path_effects:
+            continue
+        switcher_mask = path_to_group_mask[path]
+        # Per-group running sum of DID^{fd}_{g, l'} for path switchers
+        running_per_group = np.zeros(n_groups_total)
+        path_horizons_anal = path_effects[path].get("horizons", {})
+        cumulated_path: Dict[int, Dict[str, Any]] = {}
+
+        for l_h in range(1, L_max + 1):
+            if l_h not in multi_horizon_dids:
+                continue
+            mh = multi_horizon_dids[l_h]
+            did_g_l = mh.get("did_g_l")
+            eligible_global = mh.get("eligible_mask")
+            if did_g_l is None or eligible_global is None:
+                cumulated_path[l_h] = {
+                    "effect": float("nan"),
+                    "se": float("nan"),
+                    "t_stat": float("nan"),
+                    "p_value": float("nan"),
+                    "conf_int": (float("nan"), float("nan")),
+                    "n_obs": 0,
+                }
+                continue
+            # Add this horizon's per-group DID to running sum (NaN -> 0
+            # for accumulation, matching the global cumulation pattern)
+            increment = np.where(np.isfinite(did_g_l), did_g_l, 0.0)
+            running_per_group += increment
+            # Path-restricted eligible mask at horizon l
+            eligible_path = switcher_mask & eligible_global
+            n_l_path = int(eligible_path.sum())
+            if n_l_path == 0:
+                cumulated_path[l_h] = {
+                    "effect": float("nan"),
+                    "se": float("nan"),
+                    "t_stat": float("nan"),
+                    "p_value": float("nan"),
+                    "conf_int": (float("nan"), float("nan")),
+                    "n_obs": 0,
+                }
+                continue
+            cum_effect = float(
+                np.sum(S_arr[eligible_path] * running_per_group[eligible_path])
+                / n_l_path
+            )
+            # Conservative SE upper bound: sum of per-horizon component
+            # SEs from path_effects (matches global formula at :3402-3413).
+            # NaN-consistency: any non-finite component SE -> cumulated NaN.
+            component_ses = [
+                path_horizons_anal.get(ll, {}).get("se", float("nan"))
+                for ll in range(1, l_h + 1)
+            ]
+            if all(np.isfinite(s) for s in component_ses):
+                cum_se = float(sum(component_ses))
+            else:
+                cum_se = float("nan")
+            cum_t, cum_p, cum_ci = safe_inference(
+                cum_effect,
+                cum_se,
+                alpha=alpha,
+                df=df_inference,
+            )
+            cumulated_path[l_h] = {
+                "effect": cum_effect,
+                "se": cum_se,
+                "t_stat": cum_t,
+                "p_value": cum_p,
+                "conf_int": cum_ci,
+                "n_obs": n_l_path,
+            }
+
+        path_cumulated[path] = cumulated_path
+
+    return path_cumulated
+
+
 def _compute_path_placebos(
     D_mat: np.ndarray,
     Y_mat: np.ndarray,
@@ -5586,6 +5771,7 @@ def _compute_path_placebos(
     multi_horizon_placebos: Dict[int, Dict[str, Any]],
     alpha: float,
     df_inference: Optional[int] = None,
+    set_ids: Optional[np.ndarray] = None,
 ) -> Optional[Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]]:
     """
     Compute per-path backward-horizon placebos ``DID^{pl}_{path, l}``.
@@ -5674,7 +5860,7 @@ def _compute_path_placebos(
             switch_direction=switch_direction,
             T_g=T_g,
             L_max=L_max,
-            set_ids=None,
+            set_ids=set_ids,
             compute_per_period=False,
             switcher_subset_mask=switcher_mask,
         )
@@ -5758,6 +5944,7 @@ def _collect_path_bootstrap_inputs(
     eligible_mask_var: np.ndarray,
     multi_horizon_dids: Dict[int, Dict[str, Any]],
     path_effects: Dict[Tuple[int, ...], Dict[str, Any]],
+    set_ids: Optional[np.ndarray] = None,
 ) -> Dict[Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]]:
     """
     Collect per-(path, horizon) inputs for the bootstrap mixin.
@@ -5838,7 +6025,7 @@ def _collect_path_bootstrap_inputs(
             switch_direction=switch_direction,
             T_g=T_g,
             L_max=L_max,
-            set_ids=None,
+            set_ids=set_ids,
             compute_per_period=False,
             switcher_subset_mask=switcher_mask,
         )
@@ -5882,6 +6069,7 @@ def _collect_path_placebo_bootstrap_inputs(
     eligible_mask_var: np.ndarray,
     multi_horizon_placebos: Dict[int, Dict[str, Any]],
     path_placebos: Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]],
+    set_ids: Optional[np.ndarray] = None,
 ) -> Dict[Tuple[int, ...], Dict[int, Tuple[np.ndarray, int, float, None]]]:
     """
     Collect per-(path, lag) inputs for the placebo bootstrap mixin
@@ -5960,7 +6148,7 @@ def _collect_path_placebo_bootstrap_inputs(
             switch_direction=switch_direction,
             T_g=T_g,
             L_max=L_max,
-            set_ids=None,
+            set_ids=set_ids,
             compute_per_period=False,
             switcher_subset_mask=switcher_mask,
         )

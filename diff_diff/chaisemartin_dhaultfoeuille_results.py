@@ -552,6 +552,22 @@ class ChaisemartinDHaultfoeuilleResults:
     path_placebo_event_study: Optional[Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]] = field(
         default=None, repr=False
     )
+    # Per-path cumulated event study (level effects under `trends_linear`
+    # = True). `path_effects[path]["horizons"][l]` surfaces raw
+    # `DID^{fd}_l` per path; this field surfaces the cumulated level
+    # effect `delta_l = sum_{l'=1..l} DID^{fd}_{path, l'}` per (path,
+    # horizon), mirroring the global `linear_trends_effects` cumulation
+    # for non-by_path fits. Inner dict keyed by horizon directly (no
+    # `horizons` wrapper). `None` when not requested (`by_path is None`
+    # or `trends_linear=False`); `{}` is impossible (the field follows
+    # `path_effects` so a populated `path_effects` plus `trends_linear`
+    # always populates this). SE on the cumulated layer is the
+    # conservative upper bound (sum of per-horizon component SEs,
+    # NaN-consistent), matching the global `linear_trends_effects`
+    # convention.
+    path_cumulated_event_study: Optional[
+        Dict[Tuple[int, ...], Dict[int, Dict[str, Any]]]
+    ] = field(default=None, repr=False)
     # Per-path joint sup-t simultaneous-band metadata. Keyed by path
     # tuple; each entry holds `{"crit_value", "alpha", "n_bootstrap",
     # "method", "n_valid_horizons"}`. Populated when `by_path` is a
@@ -1289,6 +1305,32 @@ class ChaisemartinDHaultfoeuilleResults:
                         h["p_value"],
                     )
                 )
+            # Per-path cumulated level effects (under trends_linear).
+            # Mirrors the global linear_trends_effects rendering inside
+            # the per-path block: appears as a labeled sub-block right
+            # after the per-horizon DID^{fd}_l rows. Skip silently when
+            # path_cumulated_event_study is None or this path lacks an
+            # entry (the latter shouldn't happen, but kept as a guard).
+            if (
+                self.path_cumulated_event_study is not None
+                and path in self.path_cumulated_event_study
+            ):
+                cum_horizons = self.path_cumulated_event_study[path]
+                if cum_horizons:
+                    lines.append(
+                        "  Cumulated Level Effects (DID^{fd}, trends_linear):"
+                    )
+                    for l_h in sorted(cum_horizons.keys()):
+                        ce = cum_horizons[l_h]
+                        lines.append(
+                            _format_inference_row(
+                                f"  Level_{l_h}",
+                                ce["effect"],
+                                ce["se"],
+                                ce["t_stat"],
+                                ce["p_value"],
+                            )
+                        )
             # Per-path joint sup-t critical value (when populated).
             # Mirrors the OVERALL sup-t crit print at line ~1019.
             if self.path_sup_t_bands is not None and path in self.path_sup_t_bands:
@@ -1645,6 +1687,8 @@ class ChaisemartinDHaultfoeuilleResults:
                         "n_obs",
                         "cband_lower",
                         "cband_upper",
+                        "cumulated_effect",
+                        "cumulated_se",
                     ]
                 )
             rows = []
@@ -1666,6 +1710,13 @@ class ChaisemartinDHaultfoeuilleResults:
                     if self.path_placebo_event_study is not None
                     else {}
                 )
+                # Per-path cumulated entries (under trends_linear). Always-
+                # present, NaN-when-None mirrors the cband_* convention.
+                path_cumulated = (
+                    self.path_cumulated_event_study.get(path, {})
+                    if self.path_cumulated_event_study is not None
+                    else {}
+                )
                 for lag_key in sorted(placebo_horizons.keys()):
                     ph_entry = placebo_horizons[lag_key]
                     # Placebos do not get joint sup-t bands in this
@@ -1673,6 +1724,9 @@ class ChaisemartinDHaultfoeuilleResults:
                     # mirrors OVERALL placebo / event-study sup-t
                     # convention). Emit NaN cband columns for schema
                     # parity with the OVERALL level="event_study" table.
+                    # Placebo + cumulated is also NaN: there is no per-
+                    # path placebo cumulation surface (placebo under
+                    # trends_lin returns RAW per-horizon values per R).
                     ph_cband = ph_entry.get("cband_conf_int", (np.nan, np.nan))
                     rows.append(
                         {
@@ -1689,6 +1743,8 @@ class ChaisemartinDHaultfoeuilleResults:
                             "n_obs": ph_entry["n_obs"],
                             "cband_lower": ph_cband[0] if ph_cband else np.nan,
                             "cband_upper": ph_cband[1] if ph_cband else np.nan,
+                            "cumulated_effect": np.nan,
+                            "cumulated_se": np.nan,
                         }
                     )
                 for l_h in sorted(horizons.keys()):
@@ -1698,6 +1754,7 @@ class ChaisemartinDHaultfoeuilleResults:
                     # key / missing path entry -> NaN columns. Pinned at
                     # `TestByPathSupTBands::test_path_sup_t_to_dataframe_emits_cband_columns`.
                     h_cband = h_entry.get("cband_conf_int", (np.nan, np.nan))
+                    cum_entry = path_cumulated.get(l_h, {})
                     rows.append(
                         {
                             "path": path,
@@ -1713,6 +1770,8 @@ class ChaisemartinDHaultfoeuilleResults:
                             "n_obs": h_entry["n_obs"],
                             "cband_lower": h_cband[0] if h_cband else np.nan,
                             "cband_upper": h_cband[1] if h_cband else np.nan,
+                            "cumulated_effect": cum_entry.get("effect", np.nan),
+                            "cumulated_se": cum_entry.get("se", np.nan),
                         }
                     )
             return pd.DataFrame(rows)

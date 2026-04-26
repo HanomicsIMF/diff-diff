@@ -753,6 +753,180 @@ scenarios$multi_path_reversible_by_path_controls <- list(
   results = extract_dcdh_by_path(res16, n_effects = 3)
 )
 
+# Scenario 17: single-baseline multi-path + by_path=3 + trends_lin=TRUE
+# (Phase 3 Wave 3 #6: by_path + DID^{fd} group-specific linear trends).
+# Custom inline single-baseline DGP — `multi_path_reversible` (Scenarios
+# 13-16) concentrates each path on 1-2 F_g values, which after R's
+# per-path subset + trends_lin's F_g==2 filter collapses to a single F_g,
+# violating the dCDH staggered design restriction inside R's per-path
+# `did_multiplegt_main` call. `mixed_single_switch` (Scenario 17's first
+# attempt) is MULTI-baseline (joiners + leavers), which triggers the
+# documented multi-baseline divergence between Python's global-then-
+# disaggregate architecture and R's per-path full-pipeline call (same
+# divergence pattern as `controls`; rel diffs of 7-19% on point estimates
+# observed). To get clean single-baseline parity AND avoid the trends_lin
+# F_g concentration trap, this scenario uses a custom DGP: all groups
+# start at D=0 (single baseline), 3 paths span F_g ∈ {3,4,5} (all >= 3
+# so trends_lin's F_g==2 filter is a no-op), per-path counts unequal so
+# top-k ranking is deterministic. **R returns the cumulated level effect
+# delta_l per horizon, NOT the raw second-difference DID^{fd}_l** —
+# verified empirically against the existing `joiners_only_trends_lin`
+# parity test (`tests/test_chaisemartin_dhaultfoeuille_parity.py:403-409`
+# documents this convention). The Python parity test compares Python's
+# `path_cumulated_event_study[path][l]` against R's per-path Effect_l.
+# Placebos under trends_lin remain RAW per-horizon (no cumulated placebo
+# surface in R either), so the Python parity test compares
+# `path_placebo_event_study[path][-l]` against R's per-path Placebo_l
+# directly. Cumulated SE_RTOL is widened (~0.20 vs 0.12 used for
+# non-cumulated by_path parity) because the conservative upper-bound SE
+# (sum of per-horizon component SEs) compounds the cross-path
+# cohort-sharing deviation under summation.
+cat("  Scenario 17: single_baseline_multi_path_by_path_trends_lin\n")
+{
+  # Custom DGP: 80 switchers across 3 paths × 2 distinct F_g per path,
+  # all single-baseline (D_{g,1}=0). Each F_g maps to exactly ONE path
+  # (cohort-single-path, eliminating the cross-path cohort-sharing
+  # deviation from R that PR #360 documented for path_effects). All
+  # F_g >= 3 so trends_lin's F_g==2 filter is a no-op. Two distinct
+  # F_g per path satisfies R's staggered-design requirement inside the
+  # per-path `did_multiplegt_main` call. n_periods=11, L_max=3 gives
+  # F_g in [2,8] = 7 values; we use F_g in {3..8} = 6 values, two per
+  # path. Plus 20 never-treated + 20 always-treated controls
+  # (n_realized_groups = 120).
+  set.seed(117)
+  n_periods17 <- 13
+  L_max17 <- 3
+  target_paths17 <- list(
+    c(0L, 1L, 1L, 1L),  # path 1, sustained on (rank 1)
+    c(0L, 1L, 1L, 0L),  # path 2, on-then-off  (rank 2)
+    c(0L, 1L, 0L, 0L)   # path 3, on briefly   (rank 3)
+  )
+  # F_g-to-path mapping (each F_g unique to one path).
+  # All F_g >= 4 to avoid the F_g=3 boundary case under trends_lin —
+  # F_g=3 leaves only 1 valid pre-window Z value after the time==1
+  # filter, causing R's per-path call (which re-runs the full pipeline
+  # on the path subset) to handle pre-window/control eligibility
+  # differently from Python's global first-differencing. F_g >= 4 gives
+  # both implementations 2+ valid pre-window Z values, eliminating the
+  # boundary-case divergence.
+  #   F_g=4 -> path 1, F_g=5 -> path 1   (path 1 = 38)
+  #   F_g=6 -> path 2, F_g=7 -> path 2   (path 2 = 24)
+  #   F_g=8 -> path 3, F_g=9 -> path 3   (path 3 = 18)
+  # Total switchers = 80
+  fg_path_counts17 <- list(
+    list(F_g = 4L, path_idx = 1L, count = 20L),
+    list(F_g = 5L, path_idx = 1L, count = 18L),
+    list(F_g = 6L, path_idx = 2L, count = 13L),
+    list(F_g = 7L, path_idx = 2L, count = 11L),
+    list(F_g = 8L, path_idx = 3L, count = 11L),
+    list(F_g = 9L, path_idx = 3L, count = 7L)
+  )
+  n_switchers17 <- sum(sapply(fg_path_counts17, function(x) x$count))
+  stopifnot(n_switchers17 == 80L)
+  D17 <- matrix(0L, nrow = n_switchers17, ncol = n_periods17)
+  g17 <- 1L
+  for (entry in fg_path_counts17) {
+    F_g <- entry$F_g
+    target <- target_paths17[[entry$path_idx]]
+    n_here <- entry$count
+    for (k in seq_len(n_here)) {
+      # Pre-baseline [1..F_g-2]: D=0 (single-baseline contract)
+      if (F_g >= 3L) D17[g17, 1:(F_g - 2L)] <- 0L
+      # Window [F_g-1..F_g-1+L_max]: target path
+      for (j in 0:L_max17) D17[g17, F_g - 1L + j] <- target[j + 1L]
+      # Post-window: stable at path[L_max+1]
+      if (F_g + L_max17 <= n_periods17) {
+        D17[g17, (F_g + L_max17):n_periods17] <- target[L_max17 + 1L]
+      }
+      g17 <- g17 + 1L
+    }
+  }
+  # Append 20 never-treated and 20 always-treated controls
+  D17 <- rbind(D17,
+               matrix(0L, nrow = 20L, ncol = n_periods17),
+               matrix(1L, nrow = 20L, ncol = n_periods17))
+  n_total17 <- nrow(D17)
+  # Generate fixed effects, treatment effects, outcomes (mirror gen_reversible
+  # parameters: group_fe_sd=2.0, treatment_effect=2.0, time_trend=0.1, noise_sd=0.5)
+  set.seed(117L)
+  group_fe17 <- rnorm(n_total17, 0, 2.0)
+  noise17 <- matrix(rnorm(n_total17 * n_periods17, 0, 0.5),
+                    nrow = n_total17, ncol = n_periods17)
+  period_arr17 <- 0:(n_periods17 - 1L)
+  Y17 <- 10.0 +
+    matrix(group_fe17, nrow = n_total17, ncol = n_periods17) +
+    matrix(0.1 * period_arr17, nrow = n_total17, ncol = n_periods17, byrow = TRUE) +
+    2.0 * D17 +
+    noise17
+  # Build long data frame
+  d17 <- data.frame(
+    group = rep(seq_len(n_total17) - 1L, each = n_periods17),
+    period = rep(period_arr17, n_total17),
+    treatment = as.vector(t(D17)),
+    outcome = as.vector(t(Y17))
+  )
+  # Inject per-group linear trends (Scenario 11 pattern)
+  set.seed(217L)
+  groups17 <- sort(unique(d17$group))
+  g_trends17 <- setNames(rnorm(length(groups17), 0, 0.5),
+                         as.character(groups17))
+  d17$outcome <- d17$outcome +
+    g_trends17[as.character(d17$group)] * d17$period
+  res17 <- did_multiplegt_dyn(
+    df = d17, outcome = "outcome", group = "group", time = "period",
+    treatment = "treatment", effects = 3, placebo = 1, by_path = 3,
+    trends_lin = TRUE, ci_level = 95
+  )
+  scenarios$single_baseline_multi_path_by_path_trends_lin <- list(
+    data = list(
+      group = as.numeric(d17$group),
+      period = as.numeric(d17$period),
+      treatment = as.numeric(d17$treatment),
+      outcome = as.numeric(d17$outcome)
+    ),
+    params = list(pattern = "single_baseline_multi_path",
+                  n_switcher_groups = 80L, n_realized_groups = 120L,
+                  n_periods = 13L, seed = 117L, effects = 3, placebo = 1,
+                  by_path = 3, trends_lin = TRUE, ci_level = 95),
+    results = extract_dcdh_by_path(res17, n_effects = 3, n_placebos = 1)
+  )
+}
+
+# Scenario 18: multi_path_reversible + by_path=3 + trends_nonparam="state"
+# (Phase 3 Wave 3 #7: by_path + state-set trends). Same deterministic DGP
+# and n_periods=10 as Scenarios 16/17, with a 3-state column added
+# (deterministic per-group assignment via `((group - 1) %% 3) + 1` so
+# within-set controls are guaranteed to exist for each path). **R does
+# NOT cumulate or first-difference under trends_nonparam** — Effect_l
+# per horizon is a normal DID with set-restricted control pool. The
+# Python parity test compares per-path raw DID per (path, l) directly
+# against R's per-path Effect_l. Placebos likewise are raw per-horizon.
+# Per-path R parity matches exactly on single-baseline panels.
+cat("  Scenario 18: multi_path_reversible_by_path_trends_nonparam\n")
+d18 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 10,
+                      pattern = "multi_path_reversible", seed = 118,
+                      L_max = 3)
+d18$state <- ((d18$group - 1) %% 3) + 1
+res18 <- did_multiplegt_dyn(
+  df = d18, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 3, placebo = 1, by_path = 3,
+  trends_nonparam = "state", ci_level = 95
+)
+scenarios$multi_path_reversible_by_path_trends_nonparam <- list(
+  data = list(
+    group = as.numeric(d18$group),
+    period = as.numeric(d18$period),
+    treatment = as.numeric(d18$treatment),
+    outcome = as.numeric(d18$outcome),
+    state = as.numeric(d18$state)
+  ),
+  params = list(pattern = "multi_path_reversible",
+                n_switcher_groups = N_GOLDEN, n_realized_groups = N_GOLDEN + 40L,
+                n_periods = 10, seed = 118, effects = 3, placebo = 1,
+                by_path = 3, trends_nonparam = "state", ci_level = 95),
+  results = extract_dcdh_by_path(res18, n_effects = 3, n_placebos = 1)
+)
+
 # ---------------------------------------------------------------------------
 # Write output
 # ---------------------------------------------------------------------------

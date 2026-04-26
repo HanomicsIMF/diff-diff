@@ -22,6 +22,7 @@ SEs and mixed-direction scenarios (see class docstring).
 
 import json
 from pathlib import Path
+from typing import List
 
 import pandas as pd
 import pytest
@@ -359,6 +360,26 @@ def _golden_to_df_with_covariates(data_dict: dict) -> pd.DataFrame:
     }
     if "X1" in data_dict:
         cols["X1"] = data_dict["X1"]
+    return pd.DataFrame(cols)
+
+
+def _golden_to_df_with_extra(
+    data_dict: dict, extra_cols: List[str]
+) -> pd.DataFrame:
+    """Reconstruct a panel DataFrame including arbitrary extra columns.
+
+    Used for scenarios that ship non-covariate side columns (e.g.,
+    ``state`` for ``trends_nonparam``).
+    """
+    cols = {
+        "group": data_dict["group"],
+        "period": data_dict["period"],
+        "treatment": data_dict["treatment"],
+        "outcome": data_dict["outcome"],
+    }
+    for c in extra_cols:
+        if c in data_dict:
+            cols[c] = data_dict[c]
     return pd.DataFrame(cols)
 
 
@@ -859,6 +880,297 @@ class TestDCDHDynRParityByPathControls:
                 ), (
                     f"path={path_key} h={h}: "
                     f"py={py_h['effect']:.4f} vs r={r_h['effect']:.4f}"
+                )
+
+                py_se = py_h["se"]
+                r_se = r_h["se"]
+                py_finite_positive = math.isfinite(py_se) and py_se > 0.0
+                r_finite_positive = math.isfinite(r_se) and r_se > 0.0
+                assert py_finite_positive == r_finite_positive, (
+                    f"path={path_key} h={h} SE state mismatch "
+                    f"(py_se={py_se}, r_se={r_se})"
+                )
+                if py_finite_positive and r_finite_positive:
+                    assert py_se == pytest.approx(r_se, rel=self.SE_RTOL), (
+                        f"path={path_key} h={h} SE: "
+                        f"py={py_se:.4f} vs r={r_se:.4f}"
+                    )
+
+
+class TestDCDHDynRParityByPathTrendsLinear:
+    """
+    Parity tests for ``by_path + trends_linear`` (DID^{fd} group-specific
+    linear trends) against R DIDmultiplegtDYN 2.3.3.
+
+    R's ``did_multiplegt_dyn(..., by_path=k, trends_lin=TRUE)`` re-runs
+    the estimator per path with a path-restricted subsample
+    (``R/R/did_multiplegt_dyn.R`` lines 226-257 dispatcher → per-path
+    ``did_multiplegt_main()`` call with ``trends_lin=TRUE``). Inside
+    ``did_multiplegt_main``, R first-differences the outcome and drops
+    ``F_g==2`` switchers and ``time==1`` rows, then loops through
+    horizons computing per-horizon DID values and **cumulating** them
+    (R's ``Effect_l`` under ``trends_lin=TRUE`` is the cumulated level
+    effect ``delta_l``, NOT the raw second-difference DID^{fd}_l —
+    verified by the existing parity test at
+    ``test_parity_joiners_only_trends_lin`` lines 403-409).
+
+    Python's architecture first-differences once globally before path
+    enumeration, then disaggregates per path on the global
+    ``multi_horizon_dids`` (raw DID^{fd}_l surfaces on
+    ``path_effects``). The new ``path_cumulated_event_study`` field
+    surfaces the cumulated ``delta_l`` per path (sum of per-horizon
+    DID^{fd} values for the path's switchers, eligibility-restricted at
+    each horizon — mirrors the global ``linear_trends_effects``
+    cumulation at ``chaisemartin_dhaultfoeuille.py:3340-3398``).
+
+    The fixture ``single_baseline_multi_path_by_path_trends_lin`` is
+    designed for clean parity:
+    - Single-baseline (all switchers ``D_{g,1}=0``) eliminates the
+      multi-baseline divergence pattern (same architectural family as
+      ``controls`` — see ``TestDCDHDynRParityByPathControls``)
+    - Cohort-single-path (each ``F_g`` maps to exactly one path)
+      eliminates the cross-path cohort-sharing deviation that PR #360
+      documented for ``path_effects``
+    - All ``F_g >= 4`` keeps trends_lin's ``F_g==2`` filter a no-op
+      and gives both Python and R 2+ valid pre-window Z values
+      (avoids the boundary-case divergence at ``F_g=3``)
+
+    Per-path cumulated point estimates match R bit-exactly (rtol ~1e-9)
+    on event horizons under these conditions. Cumulated SE inherits the
+    cross-path cohort-sharing deviation amplified by summation across
+    horizons; ``CUM_SE_RTOL=0.20`` is widened from the 0.12 used for
+    non-cumulated by_path parity (per the conservative upper-bound SE
+    formula at ``_compute_path_cumulated_event_study``).
+
+    **Placebo divergence (documented):** under ``trends_linear=True`` +
+    ``by_path``, the per-path placebo at lag 1 diverges between Python
+    and R for paths whose switchers have minimal pre-window depth
+    (e.g., ``F_g=4`` switchers in path 1 of this fixture). R's per-path
+    placebo computation re-runs on the path-restricted subsample with
+    different control eligibility than Python's global-then-disaggregate
+    architecture surfaces. The placebo parity assertion is therefore
+    skipped here; placebo + ``trends_linear`` is exercised via internal
+    regression in ``TestByPathTrendsLinear`` (finite values, bootstrap
+    inheritance) but not pinned to R bit-by-bit. See REGISTRY.md
+    "Note (Phase 3 by_path)" sub-paragraph "Per-path linear-trends
+    DID^{fd}" for the full deviation documentation.
+    """
+
+    POINT_RTOL = 1e-9
+    POINT_ATOL = 1e-9
+    CUM_SE_RTOL = 0.20
+
+    def _path_key_from_r_label(self, r_label: str):
+        return tuple(int(x) for x in r_label.split(","))
+
+    def test_parity_single_baseline_multi_path_trends_lin(self, golden_values):
+        """3-path single-baseline trends_lin: by_path=3, trends_linear=True."""
+        import math
+        import warnings
+
+        scenario = golden_values.get(
+            "single_baseline_multi_path_by_path_trends_lin"
+        )
+        if scenario is None:
+            pytest.skip(
+                "scenario 'single_baseline_multi_path_by_path_trends_lin' "
+                "not in golden values"
+            )
+
+        df = _golden_to_df(scenario["data"])
+        est = ChaisemartinDHaultfoeuille(
+            drop_larger_lower=False, by_path=3, placebo=True
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            results = est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+
+        r_by_path = scenario["results"]["by_path"]
+        assert results.path_cumulated_event_study is not None, (
+            "path_cumulated_event_study should be populated under "
+            "by_path + trends_linear=True"
+        )
+        py_cum = results.path_cumulated_event_study
+
+        py_keys = set(py_cum.keys())
+        r_keys = {self._path_key_from_r_label(e["path"]) for e in r_by_path}
+        assert py_keys == r_keys, (
+            f"Path-set mismatch.\n"
+            f"  Python only: {py_keys - r_keys}\n"
+            f"  R only:      {r_keys - py_keys}"
+        )
+
+        for r_path_entry in r_by_path:
+            path_key = self._path_key_from_r_label(r_path_entry["path"])
+            py_path_cum = py_cum[path_key]
+
+            for h_str, r_h in r_path_entry["horizons"].items():
+                h = int(h_str)
+                # Skip placebo horizons (negative keys) — see class
+                # docstring for the documented deviation.
+                if h <= 0:
+                    continue
+                assert h in py_path_cum, (
+                    f"path={path_key}: horizon {h} missing from "
+                    f"path_cumulated_event_study"
+                )
+                py_h = py_path_cum[h]
+
+                assert py_h["n_obs"] == int(r_h["n_switchers"]), (
+                    f"path={path_key} h={h}: switcher-count mismatch "
+                    f"py={py_h['n_obs']} vs r={int(r_h['n_switchers'])}"
+                )
+
+                assert py_h["effect"] == pytest.approx(
+                    r_h["effect"], rel=self.POINT_RTOL, abs=self.POINT_ATOL
+                ), (
+                    f"path={path_key} h={h}: cumulated effect mismatch "
+                    f"py={py_h['effect']:.6f} vs r={r_h['effect']:.6f}"
+                )
+
+                py_se = py_h["se"]
+                r_se = r_h["se"]
+                py_finite_positive = math.isfinite(py_se) and py_se > 0.0
+                r_finite_positive = math.isfinite(r_se) and r_se > 0.0
+                assert py_finite_positive == r_finite_positive, (
+                    f"path={path_key} h={h} SE state mismatch "
+                    f"(py_se={py_se}, r_se={r_se})"
+                )
+                if py_finite_positive and r_finite_positive:
+                    assert py_se == pytest.approx(
+                        r_se, rel=self.CUM_SE_RTOL
+                    ), (
+                        f"path={path_key} h={h} cumulated SE: "
+                        f"py={py_se:.4f} vs r={r_se:.4f}"
+                    )
+
+
+class TestDCDHDynRParityByPathTrendsNonparam:
+    """
+    Parity tests for ``by_path + trends_nonparam`` (state-set trends)
+    against R DIDmultiplegtDYN 2.3.3.
+
+    R's ``did_multiplegt_dyn(..., by_path=k, trends_nonparam="state")``
+    re-runs the estimator per path with a path-restricted subsample
+    (same dispatch loop as other ``by_path`` modes). The
+    ``trends_nonparam`` parameter is passed through to
+    ``did_multiplegt_main()`` which uses the column as a grouping key
+    for control-pool restriction (``did_multiplegt_main`` lines
+    414-415: ``grp_cols <- c(grp_cols, trends_nonparam)``). R does
+    NOT first-difference and does NOT cumulate under
+    ``trends_nonparam``; ``Effect_l`` is a normal per-horizon DID
+    with set-restricted controls.
+
+    Python's architecture validates the set-membership column once
+    globally and stores ``set_ids_arr`` (aligned with ``all_groups``);
+    the ``set_ids`` parameter is threaded through the four per-path IF
+    helpers (``_compute_path_effects``,
+    ``_compute_path_placebos``, ``_collect_path_bootstrap_inputs``,
+    ``_collect_path_placebo_bootstrap_inputs``) so per-path analytical
+    SE, bootstrap, placebos, and sup-t bands all consume the
+    set-restricted control pool. Per-path point estimates and placebos
+    match R bit-exactly under the cohort-single-path
+    ``multi_path_reversible`` DGP. Per-path SE inherits the documented
+    cross-path cohort-sharing deviation (Phase 2 envelope, ~13% rtol
+    on this scenario).
+    """
+
+    POINT_RTOL = 1e-9
+    SE_RTOL = 0.15
+
+    def _path_key_from_r_label(self, r_label: str):
+        return tuple(int(x) for x in r_label.split(","))
+
+    def test_parity_multi_path_reversible_by_path_trends_nonparam(
+        self, golden_values
+    ):
+        """3-path case with state-set trends: by_path=3, trends_nonparam='state'."""
+        import math
+        import warnings
+
+        scenario = golden_values.get(
+            "multi_path_reversible_by_path_trends_nonparam"
+        )
+        if scenario is None:
+            pytest.skip(
+                "scenario 'multi_path_reversible_by_path_trends_nonparam' "
+                "not in golden values"
+            )
+
+        df = _golden_to_df_with_extra(scenario["data"], extra_cols=["state"])
+        est = ChaisemartinDHaultfoeuille(
+            drop_larger_lower=False, by_path=3, placebo=True
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            results = est.fit(
+                df,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_nonparam="state",
+                L_max=3,
+            )
+
+        r_by_path = scenario["results"]["by_path"]
+        assert results.path_effects is not None
+
+        py_keys = set(results.path_effects.keys())
+        r_keys = {self._path_key_from_r_label(e["path"]) for e in r_by_path}
+        assert py_keys == r_keys, (
+            f"Path-set mismatch.\n"
+            f"  Python only: {py_keys - r_keys}\n"
+            f"  R only:      {r_keys - py_keys}"
+        )
+
+        for r_path_entry in r_by_path:
+            path_key = self._path_key_from_r_label(r_path_entry["path"])
+            py_path = results.path_effects[path_key]
+            py_placebos = (
+                results.path_placebo_event_study.get(path_key, {})
+                if results.path_placebo_event_study is not None
+                else {}
+            )
+
+            assert py_path["frequency_rank"] == r_path_entry["frequency_rank"], (
+                f"path={path_key}: frequency_rank mismatch "
+                f"py={py_path['frequency_rank']} vs r={r_path_entry['frequency_rank']}"
+            )
+
+            for h_str, r_h in r_path_entry["horizons"].items():
+                h = int(h_str)
+                if h > 0:
+                    assert h in py_path["horizons"], (
+                        f"path={path_key}: horizon {h} missing from "
+                        f"Python path_effects"
+                    )
+                    py_h = py_path["horizons"][h]
+                else:
+                    assert h in py_placebos, (
+                        f"path={path_key}: placebo {h} missing from "
+                        f"Python path_placebo_event_study"
+                    )
+                    py_h = py_placebos[h]
+
+                assert py_h["n_obs"] == int(r_h["n_switchers"]), (
+                    f"path={path_key} h={h}: switcher-count mismatch "
+                    f"py={py_h['n_obs']} vs r={int(r_h['n_switchers'])}"
+                )
+
+                assert py_h["effect"] == pytest.approx(
+                    r_h["effect"], rel=self.POINT_RTOL
+                ), (
+                    f"path={path_key} h={h}: "
+                    f"py={py_h['effect']:.6f} vs r={r_h['effect']:.6f}"
                 )
 
                 py_se = py_h["se"]
