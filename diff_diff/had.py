@@ -2903,6 +2903,24 @@ class HeterogeneousAdoptionDiD:
             effect on ``aggregate="overall"`` or on unweighted event-
             study. ``n_bootstrap`` and ``seed`` (constructor params)
             control replicate count and RNG; defaults are 999 / ``None``.
+        trends_lin : bool, default False, keyword-only
+            When ``True``, applies paper Eq 17 linear-trend detrending
+            to per-event-time outcome evolutions. Mirrors R
+            ``DIDHAD::did_had(..., trends_lin=TRUE)``. Per-group slope
+            is estimated as ``Y[g, F-1] - Y[g, F-2]``; each event-time
+            ``e`` evolution is replaced by ``dy_dict[e] - (e+1) ×
+            slope`` (uniform formula that absorbs both effect-side
+            detrending and placebo-side anchor swap). Requires
+            ``aggregate="event_study"`` AND ``F >= 3`` (panel must
+            include both ``F-1`` and ``F-2``); raises
+            ``NotImplementedError`` on ``aggregate="overall"`` and
+            ``ValueError`` on ``F < 3``. The "consumed" placebo at
+            event time ``e=-2`` is auto-dropped (R reduces max
+            placebo lag by 1 with the same effect). Mutually
+            exclusive with survey weighting (``survey_design`` /
+            ``survey`` / ``weights``); raises ``NotImplementedError``
+            if combined. Default ``False`` preserves bit-exact
+            backcompat with all pre-PR fits.
 
         Returns
         -------

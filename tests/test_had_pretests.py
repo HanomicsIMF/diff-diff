@@ -4664,6 +4664,58 @@ class TestJointPretestsTrendsLin:
         assert report.pretrends_joint.cvm_stat_joint == r_pretrends_direct.cvm_stat_joint
         assert report.homogeneity_joint.cvm_stat_joint == r_homogeneity_direct.cvm_stat_joint
 
+    def test_workflow_trends_lin_minimal_panel_skips_step2_gracefully(self):
+        """Minimal valid trends_lin event-study panel: 4 periods, F=3
+        (so t_pre_list=[1,2], base=2, base-1=1 is the only earlier
+        placebo AND the consumed one). Workflow should set
+        pretrends_joint=None (step 2 skipped) and still run step 3
+        (homogeneity). Regression for PR #392 R2 P1.
+        """
+        rng = np.random.default_rng(35)
+        G = 200
+        T = 4
+        F = 3  # treatment onset at t=3 → pre={1,2}, post={3,4}
+        d = rng.beta(0.5, 1.0, size=G)
+        unit_fe = rng.normal(0, 1, G)
+        trend = rng.normal(0.1, 0.05, G)
+        rows = []
+        for g in range(G):
+            for t in range(1, T + 1):
+                treated = t >= F
+                y = (
+                    unit_fe[g]
+                    + trend[g] * (t - 1)
+                    + (d[g] + d[g] ** 2) * treated
+                    + rng.normal(0, 0.5)
+                )
+                dose = d[g] if treated else 0.0
+                rows.append({"unit": g, "time": t, "y": y, "d": dose})
+        df = pd.DataFrame(rows)
+        # Run workflow with trends_lin=True. Should not raise.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        # Step 2 (pretrends) skipped (the only earlier placebo at base-1
+        # is the consumed one); step 3 (homogeneity) still runs.
+        assert report.pretrends_joint is None, (
+            "expected pretrends_joint=None on the minimal-panel trends_lin "
+            "case where the only earlier placebo is the consumed one"
+        )
+        assert (
+            report.homogeneity_joint is not None
+        ), "expected homogeneity_joint to still run after step 2 skip"
+        assert np.isfinite(report.homogeneity_joint.p_value)
+
     def test_workflow_trends_lin_with_overall_aggregate_raises(self):
         """trends_lin=True only valid on event_study aggregate."""
         df = self._panel(rng_seed=34)

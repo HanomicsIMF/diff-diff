@@ -3419,6 +3419,23 @@ def joint_pretrends_test(
         DEPRECATED alias for the per-row pweight shortcut. Prefer
         ``survey_design=SurveyDesign(weights='col_name')`` against your
         dataframe instead. Will be removed in the next minor release.
+    trends_lin : bool, default False, keyword-only
+        When ``True``, applies paper Eq 17 / Eq 18 linear-trend
+        detrending: per-group slope estimated as ``Y[g, base] -
+        Y[g, base - 1]`` and subtracted from each pre-period horizon's
+        outcome evolution as ``(t - base) × slope``. Mirrors R
+        ``DIDHAD::did_had(..., trends_lin=TRUE)`` on its joint Stute
+        pre-trends surface (paper Section 5.2 Pierce-Schott
+        application). Requires ``base_period - 1`` to exist in the
+        panel; raises ``ValueError`` otherwise. The "consumed" placebo
+        at ``base_period - 1`` is dropped from ``pre_periods``
+        explicitly (its detrended residual is mechanically zero by
+        construction); a ``UserWarning`` fires when the filter
+        triggers. If ``pre_periods`` becomes empty after the drop,
+        raises ``ValueError`` (no testable placebo horizons remain).
+        Mutually exclusive with survey weighting (``survey_design`` /
+        ``survey`` / ``weights``); raises ``NotImplementedError`` if
+        combined. Default ``False`` preserves bit-exact backcompat.
 
     Returns
     -------
@@ -3800,6 +3817,18 @@ def joint_homogeneity_test(
         DEPRECATED alias for the per-row pweight shortcut. Prefer
         ``survey_design=SurveyDesign(weights='col_name')`` against your
         dataframe instead. Will be removed in the next minor release.
+    trends_lin : bool, default False, keyword-only
+        When ``True``, applies paper page-32 linear-trend detrending:
+        per-group slope estimated as ``Y[g, base] - Y[g, base - 1]``
+        and applied to each post-period horizon's outcome evolution as
+        ``(t - base) × slope`` (forward extrapolation into post). Same
+        slope estimator as :func:`joint_pretrends_test`. Mirrors R
+        ``DIDHAD::did_had(..., trends_lin=TRUE)`` on its joint
+        homogeneity surface (paper Section 4.3, Pierce-Schott p=0.40
+        anchor). Requires ``base_period - 1`` to exist in the panel;
+        raises ``ValueError`` otherwise. Mutually exclusive with
+        survey weighting; raises ``NotImplementedError`` if combined.
+        Default ``False`` preserves bit-exact backcompat.
 
     Returns
     -------
@@ -4258,6 +4287,24 @@ def did_had_pretest_workflow(
         be removed in the next minor release. Currently routed through a
         synthetic trivial ``ResolvedSurveyDesign`` so the same kernel
         handles both paths.
+    trends_lin : bool, default False, keyword-only
+        Forwards into :func:`joint_pretrends_test` and
+        :func:`joint_homogeneity_test` on the event-study dispatch
+        path. Mirrors R ``DIDHAD::did_had(..., trends_lin=TRUE)``.
+        Requires ``aggregate="event_study"``; raises
+        ``NotImplementedError`` on ``aggregate="overall"`` (the
+        overall path's qug + stute + yatchew block has no
+        joint-pretest surface). Mutually exclusive with survey
+        weighting at the joint-pretest layer; the joint wrappers
+        raise ``NotImplementedError`` if combined. **Effective step-2
+        rule under trends_lin**: the consumed placebo at
+        ``base_period - 1`` is dropped before step 2 is dispatched;
+        if no earlier placebo survives the drop (e.g., a minimal
+        4-period panel with ``F=3`` where ``base_period=2`` and the
+        only earlier placebo at ``t=1`` is the consumed one), step 2
+        is skipped (``pretrends_joint=None``) and the workflow
+        proceeds to step 3 (homogeneity). Default ``False`` preserves
+        bit-exact backcompat.
 
     Returns
     -------
@@ -4485,6 +4532,21 @@ def did_had_pretest_workflow(
         # whose lexical and chronological order disagree (e.g. "q10" <
         # "q2" lexically but > chronologically).
         earlier_pre = list(t_pre_list[:-1])
+        # PR #392 R2 P1: under trends_lin=True, the consumed placebo at
+        # base_period - 1 (= t_pre_list[-2] in the contiguous validated
+        # pre-period list) is dropped by joint_pretrends_test downstream
+        # because its detrended residual is mechanically zero. Pre-filter
+        # it here so we can preserve the EXISTING "no earlier placebo →
+        # pretrends_joint=None, skip step 2" verdict path (rather than
+        # propagating joint_pretrends_test's `ValueError("no testable
+        # placebo horizons remain")` and aborting the whole workflow).
+        # The minimal valid trends_lin event-study panel (4 periods,
+        # F=3, base=2, only earlier placebo at 1 = the consumed one)
+        # hits this path; the workflow should still run step 3
+        # (homogeneity) and emit the standard "step 2 skipped" verdict.
+        if trends_lin and len(t_pre_list) >= 2:
+            consumed_placebo_period = t_pre_list[-2]
+            earlier_pre = [t for t in earlier_pre if t != consumed_placebo_period]
         # PR #376 R2 P3: when `weights=joint_weights` is forwarded to the joint
         # wrappers (the only joint-internal entry that takes a numpy array),
         # the wrapper would re-emit a DeprecationWarning. Suppress those
