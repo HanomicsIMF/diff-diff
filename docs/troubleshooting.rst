@@ -593,6 +593,30 @@ a ``UserWarning``). The fit raises only when the panel is staggered
 
 .. code-block:: python
 
+   import numpy as np
+   import pandas as pd
+
+   # Build a staggered HAD panel for this example: 120 units, three
+   # cohorts (30 never-treated + 30 treated at period 5 + 60 treated at
+   # period 8). Dose is zero pre-treatment per unit and a constant
+   # positive value post-treatment, so the first_treat / dose-path
+   # consistency validator passes. The 60-unit last cohort gives the
+   # boundary local-linear estimator enough distinct dose values to fit.
+   np.random.seed(42)
+   n_units, n_periods = 120, 10
+   first_treat_per_unit = np.array([0] * 30 + [5] * 30 + [8] * 60)
+   dose_per_unit = np.where(
+       first_treat_per_unit > 0, np.random.uniform(0.5, 2.0, n_units), 0.0
+   )
+   rows = []
+   for u in range(n_units):
+       ft = first_treat_per_unit[u]
+       for t in range(n_periods):
+           d_ut = dose_per_unit[u] if (ft > 0 and t >= ft) else 0.0
+           y_ut = (d_ut > 0) * dose_per_unit[u] * 0.5 + np.random.normal()
+           rows.append((u, t, d_ut, ft, y_ut))
+   data = pd.DataFrame(rows, columns=["unit", "period", "dose", "first_treat", "y"])
+
    # Primary remedy: pass `first_treat_col` so the estimator auto-filters
    # to the last-treatment cohort + never-treated and emits a UserWarning.
    est = HeterogeneousAdoptionDiD()
