@@ -124,20 +124,26 @@ def _python_fit(
     otherwise pick Design 1 (``continuous_near_d_lower``,
     ``d_lower=d.min()``) for dose distributions with boundary density
     bounded away from zero (e.g., Beta(2,2)), producing different
-    point estimates."""
+    point estimates.
+
+    For the ``overall_e1`` combo (effects=1, placebo=0, trends_lin=False)
+    we slice the panel to exactly two periods (F-1 and F, where F=4 in
+    our fixture) and route through ``aggregate="overall"`` — that
+    exercises the actual two-period overall code path, not the
+    event-study path with a single horizon. PR #392 R1 P2 fix."""
     est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
     if effects == 1 and placebo == 0 and not trends_lin:
-        # R's overall_e1 path = effects=1, no placebo, no trends_lin.
-        # Python equivalent: aggregate="event_study" (since trends_lin
-        # requires event_study; for parity we use event_study uniformly
-        # so the per-event-time mapping stays consistent).
+        # Slice to the two periods (F-1=3, F=4) that R's effects=1 case
+        # actually consumes for Effect_1 = Y[F] - Y[F-1].
+        F = int(panel.loc[panel["d"] > 0, "t"].min())
+        panel_2p = panel[panel["t"].isin([F - 1, F])].copy()
         return est.fit(
-            panel,
+            panel_2p,
             outcome_col="y",
             dose_col="d",
             time_col="t",
             unit_col="g",
-            aggregate="event_study",
+            aggregate="overall",
         )
     return est.fit(
         panel,
@@ -228,12 +234,40 @@ class TestPointSEParity:
         r_combo = fixture["fixtures"][dgp_name]["combos"][combo_name]
         r_result = r_combo["result"]
         py = _python_fit(panels[dgp_name], effects, placebo, trends_lin)
-        pairs = _zip_r_python(r_result, py, trends_lin)
 
+        # `overall_e1` returns a scalar HeterogeneousAdoptionDiDResults
+        # (aggregate="overall" path); all others return the array
+        # HeterogeneousAdoptionDiDEventStudyResults. Build a uniform
+        # (rowname, py_att, py_se, py_ci_lo, py_ci_hi) iterator that
+        # works on both.
         r_se_list = _as_list(r_result["se"])
         r_ci_lo_list = _as_list(r_result["ci_lo"])
         r_ci_hi_list = _as_list(r_result["ci_hi"])
-        for r_idx, py_idx, rowname in pairs:
+        if combo_name == "overall_e1":
+            # R's overall_e1 has exactly one row (Effect_1 → ID=1 → e=0).
+            r_idx = 0
+            rowname = "Effect_1"
+            py_att = float(py.att)
+            py_se = float(py.se)
+            py_ci_lo = float(py.conf_int[0])
+            py_ci_hi = float(py.conf_int[1])
+            iterations = [(r_idx, rowname, py_att, py_se, py_ci_lo, py_ci_hi)]
+        else:
+            pairs = _zip_r_python(r_result, py, trends_lin)
+            iterations = []
+            for r_idx, py_idx, rowname in pairs:
+                iterations.append(
+                    (
+                        r_idx,
+                        rowname,
+                        float(py.att[py_idx]),
+                        float(py.se[py_idx]),
+                        float(py.conf_int_low[py_idx]),
+                        float(py.conf_int_high[py_idx]),
+                    )
+                )
+
+        for r_idx, rowname, py_att, py_se, py_ci_lo, py_ci_hi in iterations:
             r_se = r_se_list[r_idx]
             r_ci_lo = r_ci_lo_list[r_idx]
             r_ci_hi = r_ci_hi_list[r_idx]
@@ -242,11 +276,6 @@ class TestPointSEParity:
             # is the CI midpoint. Python ships the bias-corrected
             # location directly in `att`. Compare to CI midpoint.
             r_att_bc = 0.5 * (r_ci_lo + r_ci_hi)
-
-            py_att = float(py.att[py_idx])
-            py_se = float(py.se[py_idx])
-            py_ci_lo = float(py.conf_int_low[py_idx])
-            py_ci_hi = float(py.conf_int_high[py_idx])
 
             np.testing.assert_allclose(
                 py_att,

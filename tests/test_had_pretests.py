@@ -4415,6 +4415,76 @@ class TestJointPretestsTrendsLin:
             rtol=0,
         )
 
+    def test_pretrends_trends_lin_consumed_placebo_dropped_with_warning(self):
+        """When pre_periods includes base_period-1, trends_lin drops it
+        (the consumed placebo). Warning fires; remaining horizons get
+        their normal detrending. Regression for PR #392 R1 P0."""
+        df = self._panel(rng_seed=30)
+        # Panel has periods 1..5, F=4. Base=3, base-1=2.
+        # Caller passes [1, 2] which includes the consumed placebo at 2.
+        with pytest.warns(UserWarning, match=r"dropping period .*2.*consumed.*placebo"):
+            r = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[1, 2],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        # Result keeps only the surviving horizon (label "1").
+        assert list(r.horizon_labels) == ["1"], (
+            f"Expected only horizon '1' after dropping consumed placebo, "
+            f"got {list(r.horizon_labels)}"
+        )
+
+    def test_pretrends_trends_lin_only_consumed_raises(self):
+        """When pre_periods is exactly [base_period-1], trends_lin has
+        no testable horizons left → ValueError. Regression for PR #392
+        R1 P0 (concrete fix step 2)."""
+        df = self._panel(rng_seed=31)
+        # Panel periods 1..5, F=4. Base=3, base-1=2.
+        # Caller passes only [2] (the consumed placebo).
+        with pytest.raises(ValueError, match="no testable placebo horizons remain"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                joint_pretrends_test(
+                    df,
+                    "y",
+                    "d",
+                    "time",
+                    "unit",
+                    pre_periods=[2],
+                    base_period=3,
+                    n_bootstrap=99,
+                    seed=42,
+                    trends_lin=True,
+                )
+
+    def test_pretrends_trends_lin_no_consumed_in_pre_periods_no_warning(self):
+        """When pre_periods does NOT include base_period-1, no consumed-
+        placebo warning fires (negative regression)."""
+        df = self._panel(rng_seed=32)
+        # Panel periods 1..5, F=4. Base=3, base-1=2. Pass only [1].
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            r = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[1],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        assert list(r.horizon_labels) == ["1"]
+
     def test_homogeneity_trends_lin_naive_baseline(self):
         df = self._panel(rng_seed=12)
         base, base_minus_1 = 3, 2
@@ -4540,6 +4610,75 @@ class TestJointPretestsTrendsLin:
                 seed=42,
                 trends_lin=True,
                 survey_design=SurveyDesign(weights="w"),
+            )
+
+    def test_workflow_trends_lin_forwards_to_joint_wrappers(self):
+        """`did_had_pretest_workflow(aggregate='event_study', trends_lin=True)`
+        must forward trends_lin to both joint pretests AND match the
+        direct-surface call. Regression for PR #392 R1 P1."""
+        df = self._panel(rng_seed=33)
+        # Run the workflow with trends_lin=True (event_study path).
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        # Direct calls to the joint wrappers, same params, trends_lin=True.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_pretrends_direct = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[1, 2],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+            r_homogeneity_direct = joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[4, 5],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        # Workflow's joint pretests must match the direct calls bit-exactly.
+        assert report.pretrends_joint is not None
+        assert report.homogeneity_joint is not None
+        assert report.pretrends_joint.cvm_stat_joint == r_pretrends_direct.cvm_stat_joint
+        assert report.homogeneity_joint.cvm_stat_joint == r_homogeneity_direct.cvm_stat_joint
+
+    def test_workflow_trends_lin_with_overall_aggregate_raises(self):
+        """trends_lin=True only valid on event_study aggregate."""
+        df = self._panel(rng_seed=34)
+        df_2p = df[df["time"].isin([3, 4])].copy()
+        with pytest.raises(NotImplementedError, match="trends_lin=True.*event_study"):
+            did_had_pretest_workflow(
+                df_2p,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="overall",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
             )
 
     def test_pretrends_consumed_e_minus_2_dropped_in_HAD_fit(self):
