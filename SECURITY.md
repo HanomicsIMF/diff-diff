@@ -2,13 +2,13 @@
 
 ## Supported Versions
 
-Only the latest minor release of `diff-diff` receives security fixes. Older
-versions are not patched.
+Only the latest published release of `diff-diff` receives security fixes.
+Older releases are not patched.
 
 | Version | Supported |
 | ------- | --------- |
-| Latest minor (current `3.x`) | Yes |
-| Older minors | No |
+| Latest release | Yes |
+| All older releases | No |
 
 ## Reporting a Vulnerability
 

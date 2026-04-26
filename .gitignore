@@ -98,3 +98,7 @@ analysis/
 # Replication data (local only, not for distribution)
 replication_data/
 _scratch/
+
+# Per-initiative briefing notes (local only, not for distribution)
+BRIEFING.md
+briefings/
