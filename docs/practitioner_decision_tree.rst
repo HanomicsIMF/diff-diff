@@ -310,6 +310,13 @@ identification rests on stronger structural assumptions (Design 1).
    :doc:`api/had` for the inference contract (three SE regimes; pointwise CIs;
    sup-t bands only on the weighted event-study path).
 
+.. tip::
+
+   For a full walkthrough including data setup, the design auto-detection
+   diagnostic, the multi-week event study, and a stakeholder communication
+   template, see `Tutorial 20: HAD for National Brand Campaign with Regional
+   Spend Intensity <tutorials/20_had_brand_campaign.ipynb>`_.
+
 
 .. _section-few-markets:
 
