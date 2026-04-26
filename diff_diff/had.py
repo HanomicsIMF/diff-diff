@@ -2795,12 +2795,15 @@ class HeterogeneousAdoptionDiD:
         # PR #376 R4 P1: preserve pre-PR positional-or-keyword status of
         # `survey`, `weights`, `cband` for back-compat with positional
         # callers. `survey_design=` is the only new addition and is
-        # keyword-only.
+        # keyword-only. PR #389 (Phase 4 R-parity): `trends_lin=` is
+        # likewise keyword-only (additive; no positional callers can
+        # exist for it pre-PR).
         survey: Any = None,
         weights: Optional[np.ndarray] = None,
         cband: bool = True,
         *,
         survey_design: Any = None,
+        trends_lin: bool = False,
     ) -> HeterogeneousAdoptionDiDResults:
         """Fit the HAD estimator.
 
@@ -2900,6 +2903,24 @@ class HeterogeneousAdoptionDiD:
             effect on ``aggregate="overall"`` or on unweighted event-
             study. ``n_bootstrap`` and ``seed`` (constructor params)
             control replicate count and RNG; defaults are 999 / ``None``.
+        trends_lin : bool, default False, keyword-only
+            When ``True``, applies paper Eq 17 linear-trend detrending
+            to per-event-time outcome evolutions. Mirrors R
+            ``DIDHAD::did_had(..., trends_lin=TRUE)``. Per-group slope
+            is estimated as ``Y[g, F-1] - Y[g, F-2]``; each event-time
+            ``e`` evolution is replaced by ``dy_dict[e] - (e+1) ×
+            slope`` (uniform formula that absorbs both effect-side
+            detrending and placebo-side anchor swap). Requires
+            ``aggregate="event_study"`` AND ``F >= 3`` (panel must
+            include both ``F-1`` and ``F-2``); raises
+            ``NotImplementedError`` on ``aggregate="overall"`` and
+            ``ValueError`` on ``F < 3``. The "consumed" placebo at
+            event time ``e=-2`` is auto-dropped (R reduces max
+            placebo lag by 1 with the same effect). Mutually
+            exclusive with survey weighting (``survey_design`` /
+            ``survey`` / ``weights``); raises ``NotImplementedError``
+            if combined. Default ``False`` preserves bit-exact
+            backcompat with all pre-PR fits.
 
         Returns
         -------
@@ -2914,6 +2935,37 @@ class HeterogeneousAdoptionDiD:
         n_set = sum(x is not None for x in (survey_design, survey, weights))
         if n_set > 1:
             raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN)
+
+        # ---- trends_lin scope gates (PR #389 / Phase 4 R-parity).
+        # `trends_lin=True` implements paper Eq 17 linear-trend detrending
+        # (per-group slope from Y[F-1]-Y[F-2], applied to per-event-time
+        # outcome evolutions). Requires F >= 3 (need both F-1 and F-2 in
+        # panel) and is currently event-study-only — the overall path is
+        # 2-period and cannot accommodate the F-2 row.
+        if trends_lin:
+            if aggregate != "event_study":
+                raise NotImplementedError(
+                    "HAD.fit(trends_lin=True) requires "
+                    "aggregate='event_study' (the linear-trend slope "
+                    "estimator needs Y at F-2, which a 2-period panel "
+                    "does not contain). Pass a panel with at least 3 "
+                    "periods and aggregate='event_study'; the per-"
+                    "horizon arrays in the resulting "
+                    "HeterogeneousAdoptionDiDEventStudyResults provide "
+                    "the same single-effect / per-effect estimates as "
+                    "the overall path."
+                )
+            if survey_design is not None or survey is not None or weights is not None:
+                raise NotImplementedError(
+                    "HAD.fit(trends_lin=True) is not yet supported with "
+                    "survey weighting (`survey_design=` / `survey=` / "
+                    "`weights=`). The per-group slope estimator's "
+                    "weighted variant (weighted-OLS slope? per-PSU slope?) "
+                    "is not derived from the paper. Use trends_lin=True "
+                    "WITHOUT survey weights, or use survey weights "
+                    "WITHOUT trends_lin. Tracked in TODO.md as a follow-"
+                    "up if user demand emerges."
+                )
 
         # Soft deprecation: route legacy survey=/weights= aliases to
         # survey_design=. The internal back-end paths (legacy weights= and
@@ -2986,6 +3038,7 @@ class HeterogeneousAdoptionDiD:
                 survey=survey,
                 weights=weights,
                 cband=cband,
+                trends_lin=trends_lin,
             )
 
         # ---- Resolve effective fit-time state (local vars only, per
@@ -3788,6 +3841,7 @@ class HeterogeneousAdoptionDiD:
         survey: Any = None,
         weights: Optional[np.ndarray] = None,
         cband: bool = True,
+        trends_lin: bool = False,
     ) -> HeterogeneousAdoptionDiDEventStudyResults:
         """Multi-period event-study fit (paper Appendix B.2).
 
@@ -3948,6 +4002,56 @@ class HeterogeneousAdoptionDiD:
                 f"HAD event-study requires at least 3 units for inference; "
                 f"got n_units={n_units} after aggregation."
             )
+
+        # ---- Apply trends_lin detrending (paper Eq 17, R `did_had(trends_lin=TRUE)`).
+        # Compute the per-group linear-trend slope from the F-2 → F-1
+        # outcome change and subtract a (e+1) × slope adjustment from
+        # every event-time evolution. This is the unified formula that
+        # absorbs both R's effect-side detrending (Effect_i -= i × slope,
+        # i = e+1 for our event-time convention) AND R's placebo-side
+        # anchor shift (placebos under trends_lin re-anchor to F-2 and
+        # add i × slope; algebraically equivalent to dy_dict[e] -
+        # (e+1) × slope on the F-1 anchor convention).
+        #
+        # The shallowest placebo (e=-2) is dropped under trends_lin
+        # because the F-2 → F-1 evolution is "consumed" by the slope
+        # estimator (R reduces max placebo lag by 1; same effect).
+        #
+        # Optimization: dy_dict[-2] = Y[F-2] - Y[F-1] = -slope, so we
+        # can read slope directly from the dy_dict entry without
+        # re-pivoting the wide outcome matrix.
+        if trends_lin:
+            if len(t_pre_list) < 2:
+                raise ValueError(
+                    "HAD.fit(trends_lin=True) requires F >= 3 (at least "
+                    "two pre-treatment periods F-2 and F-1) so the per-"
+                    "group linear-trend slope Y[F-1] - Y[F-2] is "
+                    f"identified. Got F={F!r} with pre-periods "
+                    f"{t_pre_list!r} (need at least 2 entries)."
+                )
+            if -2 not in dy_dict:
+                # Should be unreachable given the len(t_pre_list) >= 2
+                # check above (the validator guarantees pre-periods are
+                # contiguous, so F-2 → e=-2 must be in dy_dict). Defensive
+                # belt-and-suspenders.
+                raise ValueError(
+                    "HAD.fit(trends_lin=True): expected event time -2 "
+                    "(period F-2) to be present in the panel so the "
+                    "linear-trend slope can be estimated. Got dy_dict "
+                    f"keys {sorted(dy_dict.keys())!r}."
+                )
+            # slope[g] = Y[g, F-1] - Y[g, F-2] = -dy_dict[-2][g].
+            lin_trend_slope = -dy_dict[-2]
+            # Detrend every event-time evolution. Apply BEFORE dropping
+            # e=-2 so the math is unambiguous (the e=-2 entry itself
+            # detrends to zero by construction; we drop it anyway).
+            dy_dict = {e: dy_dict[e] - (e + 1) * lin_trend_slope for e in dy_dict.keys()}
+            # Drop the consumed placebo (F-2 row used by the slope
+            # estimator). R reduces max placebo lag by 1 with the same
+            # effect (R's placebo lags shift from {1, 2, ..., F-2} to
+            # {1, 2, ..., F-3}; in our event_time convention this maps
+            # to dropping e = -2).
+            del dy_dict[-2]
 
         # ---- Zero-weight subpopulation convention (mirrors static path).
         # Design decisions (auto-detect, d_lower, mass-point threshold)

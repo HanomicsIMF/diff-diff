@@ -4242,3 +4242,867 @@ class TestPhase45CR1Regressions:
         assert report.qug is None
         assert report.stute is not None and np.isfinite(report.stute.p_value)
         assert report.yatchew is not None and np.isfinite(report.yatchew.p_value)
+
+
+class TestJointPretestsTrendsLin:
+    """Direct unit tests for trends_lin=True on joint_pretrends_test and
+    joint_homogeneity_test (PR #389 / Phase 4 R-parity).
+
+    Locks: anchor-period guard, naive-Python detrending baseline at
+    atol=1e-12, survey_design × trends_lin NotImplementedError, default
+    bit-exact backcompat. R-parity is exercised by the separate
+    test_did_had_parity.py module."""
+
+    @staticmethod
+    def _panel(rng_seed: int = 11, G: int = 200, F: int = 4, T: int = 5) -> pd.DataFrame:
+        """Build a 5-period (default) panel with F=4. Beta(0.5, 1) doses
+        give heavy density near zero; per-unit linear trends ensure
+        trends_lin=True changes the test statistic vs trends_lin=False."""
+        rng = np.random.default_rng(rng_seed)
+        d = rng.beta(0.5, 1.0, size=G)
+        unit_fe = rng.normal(0, 1, G)
+        trend = rng.normal(0.1, 0.05, G)
+        rows = []
+        for g in range(G):
+            for t in range(1, T + 1):
+                treated = t >= F
+                y = (
+                    unit_fe[g]
+                    + trend[g] * (t - 1)
+                    + (d[g] + d[g] ** 2) * treated
+                    + rng.normal(0, 0.5)
+                )
+                dose = d[g] if treated else 0.0
+                rows.append({"unit": g, "time": t, "y": y, "d": dose})
+        return pd.DataFrame(rows)
+
+    def test_pretrends_default_bit_exact_backcompat(self):
+        """trends_lin=False (default) preserves pre-PR numerics exactly."""
+        df = self._panel(rng_seed=7)
+        r1 = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[1, 2],
+            base_period=3,
+            n_bootstrap=99,
+            seed=42,
+        )
+        r2 = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[1, 2],
+            base_period=3,
+            n_bootstrap=99,
+            seed=42,
+            trends_lin=False,
+        )
+        assert r1.cvm_stat_joint == r2.cvm_stat_joint
+        assert r1.p_value == r2.p_value
+
+    def test_homogeneity_default_bit_exact_backcompat(self):
+        df = self._panel(rng_seed=8)
+        r1 = joint_homogeneity_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            post_periods=[4, 5],
+            base_period=3,
+            n_bootstrap=99,
+            seed=42,
+        )
+        r2 = joint_homogeneity_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            post_periods=[4, 5],
+            base_period=3,
+            n_bootstrap=99,
+            seed=42,
+            trends_lin=False,
+        )
+        assert r1.cvm_stat_joint == r2.cvm_stat_joint
+        assert r1.p_value == r2.p_value
+
+    def test_pretrends_trends_lin_changes_stat(self):
+        """Per-unit linear trends in DGP → trends_lin=True changes CvM."""
+        df = self._panel(rng_seed=9)
+        r_no = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[1],
+            base_period=3,
+            n_bootstrap=99,
+            seed=42,
+        )
+        r_yes = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[1],
+            base_period=3,
+            n_bootstrap=99,
+            seed=42,
+            trends_lin=True,
+        )
+        assert r_no.cvm_stat_joint != r_yes.cvm_stat_joint
+
+    def test_pretrends_trends_lin_naive_baseline(self):
+        """trends_lin detrending matches a hand-coded naive Python baseline.
+
+        Detrended dy_t = (Y[g,t] - Y[g,base]) - (t - base) × (Y[g,base] - Y[g,base-1]).
+        Build the detrended outcome manually as a new column and confirm
+        joint_pretrends_test on the manual column with trends_lin=False
+        matches joint_pretrends_test on raw Y with trends_lin=True at
+        atol=1e-12 (deterministic given fixed seed)."""
+        df = self._panel(rng_seed=10)
+        base, base_minus_1 = 3, 2
+        # Manual detrending: replace y with detrended y.
+        wide = df.pivot(index="unit", columns="time", values="y").sort_index()
+        slope = wide[base].to_numpy() - wide[base_minus_1].to_numpy()
+        # Apply Y_detrended[t] = Y[t] - (t - base) × slope per row.
+        df_manual = df.copy()
+        df_manual = df_manual.merge(
+            pd.DataFrame({"unit": np.arange(len(slope)), "slope": slope}),
+            on="unit",
+        )
+        df_manual["y"] = df_manual["y"] - (df_manual["time"] - base) * df_manual["slope"]
+        df_manual = df_manual.drop(columns=["slope"])
+
+        # joint_pretrends_test on manual-detrended y, trends_lin=False
+        r_manual = joint_pretrends_test(
+            df_manual,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[1],
+            base_period=base,
+            n_bootstrap=99,
+            seed=42,
+        )
+        # joint_pretrends_test on raw y, trends_lin=True
+        r_auto = joint_pretrends_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            pre_periods=[1],
+            base_period=base,
+            n_bootstrap=99,
+            seed=42,
+            trends_lin=True,
+        )
+        np.testing.assert_allclose(
+            r_auto.cvm_stat_joint,
+            r_manual.cvm_stat_joint,
+            atol=1e-12,
+            rtol=0,
+        )
+
+    def test_pretrends_trends_lin_consumed_placebo_dropped_with_warning(self):
+        """When pre_periods includes base_period-1, trends_lin drops it
+        (the consumed placebo). Warning fires; remaining horizons get
+        their normal detrending. Regression for PR #392 R1 P0."""
+        df = self._panel(rng_seed=30)
+        # Panel has periods 1..5, F=4. Base=3, base-1=2.
+        # Caller passes [1, 2] which includes the consumed placebo at 2.
+        with pytest.warns(UserWarning, match=r"dropping period .*2.*consumed.*placebo"):
+            r = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[1, 2],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        # Result keeps only the surviving horizon (label "1").
+        assert list(r.horizon_labels) == ["1"], (
+            f"Expected only horizon '1' after dropping consumed placebo, "
+            f"got {list(r.horizon_labels)}"
+        )
+
+    def test_pretrends_trends_lin_only_consumed_raises(self):
+        """When pre_periods is exactly [base_period-1], trends_lin has
+        no testable horizons left → ValueError. Regression for PR #392
+        R1 P0 (concrete fix step 2)."""
+        df = self._panel(rng_seed=31)
+        # Panel periods 1..5, F=4. Base=3, base-1=2.
+        # Caller passes only [2] (the consumed placebo).
+        with pytest.raises(ValueError, match="no testable placebo horizons remain"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                joint_pretrends_test(
+                    df,
+                    "y",
+                    "d",
+                    "time",
+                    "unit",
+                    pre_periods=[2],
+                    base_period=3,
+                    n_bootstrap=99,
+                    seed=42,
+                    trends_lin=True,
+                )
+
+    def test_pretrends_trends_lin_no_consumed_in_pre_periods_no_warning(self):
+        """When pre_periods does NOT include base_period-1, no consumed-
+        placebo warning fires (negative regression)."""
+        df = self._panel(rng_seed=32)
+        # Panel periods 1..5, F=4. Base=3, base-1=2. Pass only [1].
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            r = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[1],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        assert list(r.horizon_labels) == ["1"]
+
+    def test_homogeneity_trends_lin_naive_baseline(self):
+        df = self._panel(rng_seed=12)
+        base, base_minus_1 = 3, 2
+        wide = df.pivot(index="unit", columns="time", values="y").sort_index()
+        slope = wide[base].to_numpy() - wide[base_minus_1].to_numpy()
+        df_manual = df.copy()
+        df_manual = df_manual.merge(
+            pd.DataFrame({"unit": np.arange(len(slope)), "slope": slope}),
+            on="unit",
+        )
+        df_manual["y"] = df_manual["y"] - (df_manual["time"] - base) * df_manual["slope"]
+        df_manual = df_manual.drop(columns=["slope"])
+
+        r_manual = joint_homogeneity_test(
+            df_manual,
+            "y",
+            "d",
+            "time",
+            "unit",
+            post_periods=[4, 5],
+            base_period=base,
+            n_bootstrap=99,
+            seed=42,
+        )
+        r_auto = joint_homogeneity_test(
+            df,
+            "y",
+            "d",
+            "time",
+            "unit",
+            post_periods=[4, 5],
+            base_period=base,
+            n_bootstrap=99,
+            seed=42,
+            trends_lin=True,
+        )
+        np.testing.assert_allclose(
+            r_auto.cvm_stat_joint,
+            r_manual.cvm_stat_joint,
+            atol=1e-12,
+            rtol=0,
+        )
+
+    def test_homogeneity_trends_lin_missing_base_minus_1_raises(self):
+        """When base is the FIRST period in panel (no base-1), trends_lin
+        must error. joint_homogeneity_test is the reachable surface for
+        this guard: it allows base to be a pre-period AND the earliest
+        period (joint_pretrends_test additionally requires pre_periods <
+        base, which structurally forces base-1 to exist if any pre_period
+        is in the panel)."""
+        # Panel periods [3, 4, 5], F=4, base=3 (earliest, last pre-period
+        # before treatment), post=[4, 5].
+        df = self._panel(rng_seed=14, F=4, T=5)
+        df_trim = df[df["time"] >= 3].copy()
+        with pytest.raises(ValueError, match=r"at least 2 (validated )?pre-periods"):
+            joint_homogeneity_test(
+                df_trim,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[4, 5],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+
+    def test_pretrends_trends_lin_with_survey_design_raises(self):
+        from diff_diff import SurveyDesign
+
+        df = self._panel(rng_seed=15)
+        df["w"] = 1.0
+        with pytest.raises(NotImplementedError, match="trends_lin=True.*survey"):
+            joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[1, 2],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+                survey_design=SurveyDesign(weights="w"),
+            )
+
+    def test_pretrends_trends_lin_with_weights_alias_raises(self):
+        df = self._panel(rng_seed=16)
+        with pytest.raises(NotImplementedError, match="trends_lin=True.*survey"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                joint_pretrends_test(
+                    df,
+                    "y",
+                    "d",
+                    "time",
+                    "unit",
+                    pre_periods=[1, 2],
+                    base_period=3,
+                    n_bootstrap=99,
+                    seed=42,
+                    trends_lin=True,
+                    weights=np.ones(len(df)),
+                )
+
+    def test_homogeneity_trends_lin_with_survey_design_raises(self):
+        from diff_diff import SurveyDesign
+
+        df = self._panel(rng_seed=17)
+        df["w"] = 1.0
+        with pytest.raises(NotImplementedError, match="trends_lin=True.*survey"):
+            joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[4, 5],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+                survey_design=SurveyDesign(weights="w"),
+            )
+
+    def test_workflow_trends_lin_forwards_to_joint_wrappers(self):
+        """`did_had_pretest_workflow(aggregate='event_study', trends_lin=True)`
+        must forward trends_lin to both joint pretests AND match the
+        direct-surface call. Regression for PR #392 R1 P1."""
+        df = self._panel(rng_seed=33)
+        # Run the workflow with trends_lin=True (event_study path).
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        # Direct calls to the joint wrappers, same params, trends_lin=True.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_pretrends_direct = joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[1, 2],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+            r_homogeneity_direct = joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[4, 5],
+                base_period=3,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        # Workflow's joint pretests must match the direct calls bit-exactly.
+        assert report.pretrends_joint is not None
+        assert report.homogeneity_joint is not None
+        assert report.pretrends_joint.cvm_stat_joint == r_pretrends_direct.cvm_stat_joint
+        assert report.homogeneity_joint.cvm_stat_joint == r_homogeneity_direct.cvm_stat_joint
+
+    def test_workflow_trends_lin_minimal_panel_skips_step2_gracefully(self):
+        """Minimal valid trends_lin event-study panel: 4 periods, F=3
+        (so t_pre_list=[1,2], base=2, base-1=1 is the only earlier
+        placebo AND the consumed one). Workflow should set
+        pretrends_joint=None (step 2 skipped) and still run step 3
+        (homogeneity). Regression for PR #392 R2 P1.
+        """
+        rng = np.random.default_rng(35)
+        G = 200
+        T = 4
+        F = 3  # treatment onset at t=3 → pre={1,2}, post={3,4}
+        d = rng.beta(0.5, 1.0, size=G)
+        unit_fe = rng.normal(0, 1, G)
+        trend = rng.normal(0.1, 0.05, G)
+        rows = []
+        for g in range(G):
+            for t in range(1, T + 1):
+                treated = t >= F
+                y = (
+                    unit_fe[g]
+                    + trend[g] * (t - 1)
+                    + (d[g] + d[g] ** 2) * treated
+                    + rng.normal(0, 0.5)
+                )
+                dose = d[g] if treated else 0.0
+                rows.append({"unit": g, "time": t, "y": y, "d": dose})
+        df = pd.DataFrame(rows)
+        # Run workflow with trends_lin=True. Should not raise.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            report = did_had_pretest_workflow(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="event_study",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        # Step 2 (pretrends) skipped (the only earlier placebo at base-1
+        # is the consumed one); step 3 (homogeneity) still runs.
+        assert report.pretrends_joint is None, (
+            "expected pretrends_joint=None on the minimal-panel trends_lin "
+            "case where the only earlier placebo is the consumed one"
+        )
+        assert (
+            report.homogeneity_joint is not None
+        ), "expected homogeneity_joint to still run after step 2 skip"
+        assert np.isfinite(report.homogeneity_joint.p_value)
+
+    def test_pretrends_trends_lin_nonterminal_base_raises(self):
+        """Direct caller passing base_period < t_pre_list[-1] under
+        trends_lin=True must raise — Eq 17 anchors at F-1.
+        Regression for PR #392 R3 P1 (methodology guard)."""
+        df = self._panel(rng_seed=40)
+        # Panel periods 1..5, F=4. t_pre_list = [1, 2, 3], F-1 = 3.
+        # Pass base_period=2 (non-terminal pre-period).
+        with pytest.raises(ValueError, match="last validated pre-period"):
+            joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[1],
+                base_period=2,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+
+    def test_homogeneity_trends_lin_nonterminal_base_raises(self):
+        """Twin guard for joint_homogeneity_test."""
+        df = self._panel(rng_seed=41)
+        with pytest.raises(ValueError, match="last validated pre-period"):
+            joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[4, 5],
+                base_period=2,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+
+    def test_pretrends_trends_lin_unused_categorical_observed_only(self):
+        """Ordered categorical time column with an unused intermediate
+        level: trends_lin must resolve base_period - 1 to the previous
+        OBSERVED period, not to the unused level (which would KeyError
+        on the slope-pivot lookup). Regression for PR #392 R3 P1."""
+        df_int = self._panel(rng_seed=42)
+        # Convert time to ordered categorical with an unused intermediate
+        # level inserted between observed levels t3 and t4.
+        cat_levels = ["t1", "t2", "t3", "t_unused", "t4", "t5"]
+        time_map = {1: "t1", 2: "t2", 3: "t3", 4: "t4", 5: "t5"}
+        df = df_int.copy()
+        df["time"] = pd.Categorical(
+            df["time"].map(time_map),
+            categories=cat_levels,
+            ordered=True,
+        )
+        # Sanity: t_unused is in the dtype but absent from data.
+        assert "t_unused" in df["time"].cat.categories
+        assert "t_unused" not in set(df["time"].dropna().unique())
+        # F=4 → t_pre_list = [t1, t2, t3], base must equal t3 under
+        # trends_lin. Under the OLD period_rank lookup, base_minus_1
+        # by rank would resolve to t_unused (rank 2 below t3=rank 4...
+        # wait actually rank-1 = rank(t3)-1 = 3-1 = 2, which is t3
+        # itself wait no t3 = rank 2). Let me reason: cat_levels
+        # ranks t1=0, t2=1, t3=2, t_unused=3, t4=4, t5=5. For
+        # base=t3 (rank 2), base-1 by rank = rank 1 = t2 (correct).
+        # Better demonstration: pass base=t4 (post-period) — but that
+        # would be invalid by other guards. Use a setup where the
+        # unused level lies BEFORE base in chronology: place
+        # t_unused between t2 and t3, then base=t3.
+        cat_levels2 = ["t1", "t2", "t_unused", "t3", "t4", "t5"]
+        df2 = df_int.copy()
+        df2["time"] = pd.Categorical(
+            df2["time"].map(time_map),
+            categories=cat_levels2,
+            ordered=True,
+        )
+        # Now base=t3 (rank 3); base-1 by rank = t_unused (rank 2,
+        # not in data). Old code would KeyError on the slope pivot;
+        # new observed-only lookup resolves to t2 (the previous
+        # observed period). Verify the call SUCCEEDS.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = joint_pretrends_test(
+                df2,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=["t1"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        assert np.isfinite(r.cvm_stat_joint)
+        assert np.isfinite(r.p_value)
+
+    def test_pretrends_trends_lin_unused_categorical_invariant(self):
+        """Same observed panel with vs without unused intermediate
+        categorical levels must produce IDENTICAL joint statistics on
+        the pretrends path. Reviewer-requested invariant for PR #392
+        R4 P0 — detrending delta must use observed-period rank, not
+        full-categorical rank."""
+        df_int = self._panel(rng_seed=50)
+        time_map = {1: "t1", 2: "t2", 3: "t3", 4: "t4", 5: "t5"}
+        df_a = df_int.copy()
+        df_a["time"] = pd.Categorical(
+            df_a["time"].map(time_map),
+            categories=["t1", "t2", "t3", "t4", "t5"],
+            ordered=True,
+        )
+        df_b = df_int.copy()
+        df_b["time"] = pd.Categorical(
+            df_b["time"].map(time_map),
+            categories=["t1", "t_unused1", "t2", "t3", "t_unused2", "t4", "t5"],
+            ordered=True,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_a = joint_pretrends_test(
+                df_a,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=["t1"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+            r_b = joint_pretrends_test(
+                df_b,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=["t1"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        assert r_a.cvm_stat_joint == r_b.cvm_stat_joint, (
+            f"unused-categorical invariance broken on pretrends: "
+            f"a={r_a.cvm_stat_joint}, b={r_b.cvm_stat_joint}"
+        )
+        assert r_a.p_value == r_b.p_value
+
+    def test_homogeneity_trends_lin_unused_categorical_invariant(self):
+        """Twin invariant for joint_homogeneity_test."""
+        df_int = self._panel(rng_seed=51)
+        time_map = {1: "t1", 2: "t2", 3: "t3", 4: "t4", 5: "t5"}
+        df_a = df_int.copy()
+        df_a["time"] = pd.Categorical(
+            df_a["time"].map(time_map),
+            categories=["t1", "t2", "t3", "t4", "t5"],
+            ordered=True,
+        )
+        df_b = df_int.copy()
+        df_b["time"] = pd.Categorical(
+            df_b["time"].map(time_map),
+            # Insert unused level between base (t3) and post (t4) — would
+            # change the post-period delta under the buggy full-cat rank.
+            categories=["t1", "t2", "t3", "t_unused", "t4", "t5"],
+            ordered=True,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_a = joint_homogeneity_test(
+                df_a,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=["t4", "t5"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+            r_b = joint_homogeneity_test(
+                df_b,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=["t4", "t5"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        assert r_a.cvm_stat_joint == r_b.cvm_stat_joint, (
+            f"unused-categorical invariance broken on homogeneity: "
+            f"a={r_a.cvm_stat_joint}, b={r_b.cvm_stat_joint}"
+        )
+        assert r_a.p_value == r_b.p_value
+
+    def test_workflow_trends_lin_with_overall_aggregate_raises(self):
+        """trends_lin=True only valid on event_study aggregate."""
+        df = self._panel(rng_seed=34)
+        df_2p = df[df["time"].isin([3, 4])].copy()
+        with pytest.raises(NotImplementedError, match="trends_lin=True.*event_study"):
+            did_had_pretest_workflow(
+                df_2p,
+                "y",
+                "d",
+                "time",
+                "unit",
+                aggregate="overall",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+
+    def test_pretrends_consumed_e_minus_2_dropped_in_HAD_fit(self):
+        """Cross-surface: HAD.fit(trends_lin=True) drops e=-2 from event_times.
+
+        Locks the consumed-placebo invariant (R reduces max placebo lag
+        by 1; in our event_time convention that maps to dropping e=-2)."""
+        from diff_diff import HeterogeneousAdoptionDiD
+
+        df = self._panel(rng_seed=18)
+        est_no = HeterogeneousAdoptionDiD().fit(
+            df,
+            outcome_col="y",
+            dose_col="d",
+            time_col="time",
+            unit_col="unit",
+            aggregate="event_study",
+        )
+        est_yes = HeterogeneousAdoptionDiD().fit(
+            df,
+            outcome_col="y",
+            dose_col="d",
+            time_col="time",
+            unit_col="unit",
+            aggregate="event_study",
+            trends_lin=True,
+        )
+        assert -2 in est_no.event_times.tolist()
+        assert -2 not in est_yes.event_times.tolist()
+
+
+class TestHADFitTrendsLin:
+    """Direct unit tests for HAD.fit(trends_lin=True) (event-study path).
+
+    Locks F>=3 guard, aggregate='overall' rejection, survey_design ×
+    trends_lin NotImplementedError, get/set_params idempotence."""
+
+    @staticmethod
+    def _panel(F: int = 4, T: int = 5, G: int = 200, rng_seed: int = 21) -> pd.DataFrame:
+        rng = np.random.default_rng(rng_seed)
+        d = rng.beta(0.5, 1.0, size=G)
+        unit_fe = rng.normal(0, 1, G)
+        trend = rng.normal(0.1, 0.05, G)
+        rows = []
+        for g in range(G):
+            for t in range(1, T + 1):
+                treated = t >= F
+                y = (
+                    unit_fe[g]
+                    + trend[g] * (t - 1)
+                    + (d[g] + d[g] ** 2) * treated
+                    + rng.normal(0, 0.5)
+                )
+                dose = d[g] if treated else 0.0
+                rows.append({"unit": g, "time": t, "y": y, "d": dose})
+        return pd.DataFrame(rows)
+
+    def test_fit_default_bit_exact_backcompat(self):
+        from diff_diff import HeterogeneousAdoptionDiD
+
+        df = self._panel(rng_seed=22)
+        r1 = HeterogeneousAdoptionDiD().fit(
+            df,
+            outcome_col="y",
+            dose_col="d",
+            time_col="time",
+            unit_col="unit",
+            aggregate="event_study",
+        )
+        r2 = HeterogeneousAdoptionDiD().fit(
+            df,
+            outcome_col="y",
+            dose_col="d",
+            time_col="time",
+            unit_col="unit",
+            aggregate="event_study",
+            trends_lin=False,
+        )
+        np.testing.assert_array_equal(r1.event_times, r2.event_times)
+        np.testing.assert_array_equal(r1.att, r2.att)
+
+    def test_fit_aggregate_overall_with_trends_lin_raises(self):
+        from diff_diff import HeterogeneousAdoptionDiD
+
+        df = self._panel(F=2, T=2, rng_seed=23)
+        with pytest.raises(NotImplementedError, match="aggregate='event_study'"):
+            HeterogeneousAdoptionDiD().fit(
+                df,
+                outcome_col="y",
+                dose_col="d",
+                time_col="time",
+                unit_col="unit",
+                aggregate="overall",
+                trends_lin=True,
+            )
+
+    def test_fit_F2_with_trends_lin_raises(self):
+        """F=2 (only 1 pre-period at t=1) → cannot identify slope."""
+        from diff_diff import HeterogeneousAdoptionDiD
+
+        # Build a 3-period panel with F=2 (treatment at t=2; only t=1 is pre).
+        df = self._panel(F=2, T=3, rng_seed=24)
+        with pytest.raises(ValueError, match="F >= 3"):
+            HeterogeneousAdoptionDiD().fit(
+                df,
+                outcome_col="y",
+                dose_col="d",
+                time_col="time",
+                unit_col="unit",
+                aggregate="event_study",
+                trends_lin=True,
+            )
+
+    def test_fit_with_survey_design_and_trends_lin_raises(self):
+        from diff_diff import HeterogeneousAdoptionDiD, SurveyDesign
+
+        df = self._panel(rng_seed=25)
+        df["w"] = 1.0
+        with pytest.raises(NotImplementedError, match="trends_lin=True.*survey"):
+            HeterogeneousAdoptionDiD().fit(
+                df,
+                outcome_col="y",
+                dose_col="d",
+                time_col="time",
+                unit_col="unit",
+                aggregate="event_study",
+                trends_lin=True,
+                survey_design=SurveyDesign(weights="w"),
+            )
+
+    def test_fit_with_weights_alias_and_trends_lin_raises(self):
+        from diff_diff import HeterogeneousAdoptionDiD
+
+        df = self._panel(rng_seed=26)
+        with pytest.raises(NotImplementedError, match="trends_lin=True.*survey"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                HeterogeneousAdoptionDiD().fit(
+                    df,
+                    outcome_col="y",
+                    dose_col="d",
+                    time_col="time",
+                    unit_col="unit",
+                    aggregate="event_study",
+                    trends_lin=True,
+                    weights=np.ones(len(df)),
+                )
+
+    def test_fit_idempotence_with_trends_lin(self):
+        """Repeat-fit with the same estimator + trends_lin=True yields
+        identical numbers (per feedback_fit_does_not_mutate_config)."""
+        from diff_diff import HeterogeneousAdoptionDiD
+
+        df = self._panel(rng_seed=27)
+        est = HeterogeneousAdoptionDiD()
+        r1 = est.fit(
+            df,
+            outcome_col="y",
+            dose_col="d",
+            time_col="time",
+            unit_col="unit",
+            aggregate="event_study",
+            trends_lin=True,
+        )
+        r2 = est.fit(
+            df,
+            outcome_col="y",
+            dose_col="d",
+            time_col="time",
+            unit_col="unit",
+            aggregate="event_study",
+            trends_lin=True,
+        )
+        np.testing.assert_array_equal(r1.event_times, r2.event_times)
+        np.testing.assert_array_equal(r1.att, r2.att)
+        # get_params unchanged (no fit-time mutation).
+        assert est.get_params() == HeterogeneousAdoptionDiD().get_params()

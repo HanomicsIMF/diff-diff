@@ -13,6 +13,9 @@ required_packages <- c(
   "triplediff",    # Ortiz-Villavicencio & Sant'Anna (2025) triple difference
   "survey",        # Lumley (2004) complex survey analysis
   "estimatr",      # Blair et al. (2019) weighted robust / IV SE (HAD mass-point parity)
+  "DIDHAD",        # de Chaisemartin et al. (2025) HAD estimator (HAD Phase 4 R-parity)
+  "YatchewTest",   # Yatchew (1997) linearity test (HAD yatchew R-parity)
+  "nprobust",      # Calonico-Cattaneo-Farrell local-linear (DIDHAD dependency)
 
   # Utilities
   "jsonlite",      # JSON output for Python interop
@@ -33,6 +36,42 @@ install_if_missing <- function(pkg) {
   }
 }
 
+# PR #392 R6 P3: pinned-version installer for upstream packages whose
+# version is part of the parity contract. The HAD R-parity test
+# (`tests/test_did_had_parity.py`) and the generator
+# (`benchmarks/R/generate_did_had_golden.R`) hard-pin DIDHAD,
+# YatchewTest, and nprobust to specific versions; without a
+# version-aware installer here, a fresh R environment would silently
+# install whatever CRAN currently serves and the generator's
+# `stopifnot(packageVersion(...) == "X.Y.Z")` would abort.
+install_pinned_version <- function(pkg, version) {
+  if (requireNamespace(pkg, quietly = TRUE) &&
+      as.character(packageVersion(pkg)) == version) {
+    message(sprintf("%s is already at pinned version %s.", pkg, version))
+    return(invisible(NULL))
+  }
+  message(sprintf("Installing %s == %s (pinned for HAD R-parity)...", pkg, version))
+  if (!requireNamespace("remotes", quietly = TRUE)) {
+    install.packages("remotes", repos = "https://cloud.r-project.org/", quiet = TRUE)
+  }
+  remotes::install_version(
+    pkg,
+    version = version,
+    repos = "https://cloud.r-project.org/",
+    quiet = TRUE,
+    upgrade = "never"
+  )
+}
+
+# HAD R-parity (PR #392) version pins. Bump these in lockstep with
+# the generator's `stopifnot(packageVersion(...) == "X.Y.Z")` and the
+# parity test's `test_metadata_versions_match` when re-anchoring.
+pinned_versions <- list(
+  DIDHAD = "2.0.0",
+  YatchewTest = "1.1.1",
+  nprobust = "0.5.0"
+)
+
 install_github_if_missing <- function(pkg, repo) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
     message(sprintf("Installing %s from GitHub...", pkg))
@@ -48,6 +87,15 @@ install_github_if_missing <- function(pkg, repo) {
 # Install CRAN packages
 message("Installing CRAN packages...")
 lapply(required_packages, install_if_missing)
+
+# Reinforce the HAD R-parity pinned versions AFTER the bulk install
+# above (which may have installed any-CRAN-version of e.g. nprobust
+# as a transitive dep). install_pinned_version is idempotent if the
+# correct version is already installed.
+message("\nEnforcing HAD R-parity version pins...")
+for (pkg in names(pinned_versions)) {
+  install_pinned_version(pkg, pinned_versions[[pkg]])
+}
 
 # Install GitHub packages
 message("\nInstalling GitHub packages...")

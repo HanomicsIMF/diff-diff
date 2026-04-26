@@ -49,11 +49,16 @@ Composite workflow:
   (Step 4 in the paper's workflow is the decision itself - "use TWFE
   if none of the tests rejects" - not a separate test.)
 
-Eq. 18 linear-trend detrending (paper Section 5.2 Pierce-Schott
-application, published p=0.51) is the one remaining deferred item;
-tracked in ``TODO.md`` and slated for Phase 4 alongside the replication
-harness. See ``docs/methodology/REGISTRY.md`` for the full algorithm
-narrative, invariants, and deviation notes.
+Eq. 17 / Eq. 18 linear-trend detrending (paper Section 5.2 Pierce-Schott
+application) shipped in PR #389 (Phase 4 R-parity) as the
+``trends_lin: bool = False`` keyword-only kwarg on
+:func:`joint_pretrends_test`, :func:`joint_homogeneity_test`, AND
+:meth:`HeterogeneousAdoptionDiD.fit` (event-study path). Mirrors R
+``DIDHAD::did_had(..., trends_lin=TRUE)``. Survey-weighted variant is
+not yet derived from the paper and raises ``NotImplementedError``;
+tracked in ``TODO.md`` if user demand emerges. See
+``docs/methodology/REGISTRY.md`` for the full algorithm narrative,
+invariants, and deviation notes.
 """
 
 from __future__ import annotations
@@ -428,8 +433,10 @@ class StuteJointResult:
     :func:`joint_pretrends_test` (mean-independence: ``E[Y_t - Y_base | D]
     = mu_t``, design matrix ``[1]``) and :func:`joint_homogeneity_test`
     (linearity: ``E[Y_t - Y_base | D_t] = beta_{0,t} + beta_{fe,t} * D``,
-    design matrix ``[1, D]``). Eq 18 linear-trend detrending (paper
-    Section 5.2 Pierce-Schott application) is a Phase 4 follow-up.
+    design matrix ``[1, D]``). Both wrappers accept a ``trends_lin:
+    bool = False`` keyword-only flag (PR #392): when ``True``, applies
+    paper Eq 17 / Eq 18 linear-trend detrending before the joint CvM
+    using per-group slope ``Y[g, F-1] - Y[g, F-2]``.
 
     Attributes
     ----------
@@ -3363,6 +3370,7 @@ def joint_pretrends_test(
     survey_design: Any = None,
     survey: Any = None,
     weights: Optional[np.ndarray] = None,
+    trends_lin: bool = False,
 ) -> StuteJointResult:
     """Joint Stute pre-trends test (paper Section 4.2 step 2).
 
@@ -3413,6 +3421,29 @@ def joint_pretrends_test(
         DEPRECATED alias for the per-row pweight shortcut. Prefer
         ``survey_design=SurveyDesign(weights='col_name')`` against your
         dataframe instead. Will be removed in the next minor release.
+    trends_lin : bool, default False, keyword-only
+        When ``True``, applies paper Eq 17 / Eq 18 linear-trend
+        detrending: per-group slope estimated as ``Y[g, base] -
+        Y[g, base - 1]`` and subtracted from each pre-period horizon's
+        outcome evolution as ``(t - base) × slope``. Mirrors R
+        ``DIDHAD::did_had(..., trends_lin=TRUE)`` on its joint Stute
+        pre-trends surface (paper Section 5.2 Pierce-Schott
+        application). **Requires** ``base_period`` to equal the last
+        validated pre-period (``t_pre_list[-1]``, i.e. the canonical
+        ``F-1`` anchor). Direct callers passing a non-terminal base
+        get a ``ValueError`` — Eq 17 / R both anchor at ``F-1`` and
+        any other anchor would compute a different slope and
+        detrending. The previous validated pre-period
+        (``t_pre_list[-2]``, ``F-2``) must also be present so the
+        slope is identified. The "consumed" placebo at ``F-2`` is
+        dropped from ``pre_periods`` explicitly (its detrended
+        residual is mechanically zero by construction); a
+        ``UserWarning`` fires when the filter triggers. If
+        ``pre_periods`` becomes empty after the drop, raises
+        ``ValueError`` (no testable placebo horizons remain).
+        Mutually exclusive with survey weighting (``survey_design`` /
+        ``survey`` / ``weights``); raises ``NotImplementedError`` if
+        combined. Default ``False`` preserves bit-exact backcompat.
 
     Returns
     -------
@@ -3438,6 +3469,21 @@ def joint_pretrends_test(
     # Internal alias rebind: downstream code uses `survey` and `weights`.
     if survey_design is not None and survey is None:
         survey = survey_design
+
+    # ---- trends_lin × survey_design gate (PR #389 / Phase 4 R-parity). ----
+    # Detrending under survey weighting (weighted slope? per-PSU slope?)
+    # is not derived from the paper. Use trends_lin without survey weights,
+    # OR survey weights without trends_lin. Tracked as TODO follow-up.
+    if trends_lin and (survey is not None or weights is not None):
+        raise NotImplementedError(
+            "joint_pretrends_test(trends_lin=True) is not yet supported "
+            "with survey weighting (`survey_design=` / `survey=` / "
+            "`weights=`). The per-group slope estimator's weighted "
+            "variant is not derived from the paper. Use trends_lin=True "
+            "WITHOUT survey weights, or use survey weights WITHOUT "
+            "trends_lin. Tracked in TODO.md as a follow-up if user "
+            "demand emerges."
+        )
 
     if len(pre_periods) == 0:
         raise ValueError(
@@ -3478,6 +3524,15 @@ def joint_pretrends_test(
             f"(base_period={base_period!r})."
         )
 
+    # ---- trends_lin: defer the consumed-placebo drop and base-1
+    # identification until AFTER the validator block runs (so we can
+    # use t_pre_list to enforce the non-terminal-base guard and the
+    # observed-period predecessor consistently). On 2-period panels
+    # the validator does not run and trends_lin needs F-2, which is
+    # impossible — front-door-reject here.
+    base_minus_1_period: Any = None
+    pre_periods_effective = list(pre_periods)
+
     # Event-study validation contract (paper Appendix B.2):
     # When the panel has >= 3 distinct periods, always route through
     # `_validate_had_panel_event_study`. This enforces (a) balanced
@@ -3489,6 +3544,13 @@ def joint_pretrends_test(
     # panels the validator does not apply; skip and fall through to the
     # simpler balance/invariant guards in `_aggregate_for_joint_test`.
     n_periods = int(data[time_col].nunique())
+    if trends_lin and n_periods < 3:
+        raise ValueError(
+            f"joint_pretrends_test(trends_lin=True) requires a panel "
+            f"with at least 3 distinct time periods so the per-group "
+            f"slope Y[g, base] - Y[g, base - 1] is identified. Got "
+            f"n_periods={n_periods}."
+        )
     data_filtered: pd.DataFrame = data
     if n_periods >= 3:
         F_val, t_pre_list, _t_post_list, data_filtered, _filter_info = (
@@ -3522,6 +3584,68 @@ def joint_pretrends_test(
                 f"periods. Not-pre entries: {not_pre!r}. Validator's "
                 f"pre-period set: {list(t_pre_list)!r}."
             )
+        # PR #392 R3 P1 (non-terminal base guard): paper Eq 17 / Eq 18
+        # and R `DIDHAD::did_had(..., trends_lin=TRUE)` anchor the
+        # detrending at F-1 (the last validated pre-period) and use
+        # Y[F-1] - Y[F-2] as the slope. A direct caller passing
+        # base_period < F-1 (e.g. F-2) would compute a different slope
+        # at a different anchor, silently changing the methodology
+        # away from the documented Eq 17/18 construction. Reject
+        # explicitly. Workflow + HAD.fit always pass F-1; this check
+        # only fires on direct user calls with non-terminal bases.
+        if trends_lin and base_period != t_pre_list[-1]:
+            raise ValueError(
+                f"joint_pretrends_test(trends_lin=True) requires "
+                f"base_period to equal the last validated pre-period "
+                f"({t_pre_list[-1]!r}, the canonical Eq 17 anchor "
+                f"F-1). Got base_period={base_period!r}. Anchoring at "
+                f"any other pre-period would compute a different "
+                f"slope and detrending that does not match paper "
+                f"Eq 17 / Eq 18 or R DIDHAD::did_had(trends_lin=TRUE)."
+            )
+        # PR #392 R3 P1 (observed-period base-1 lookup) + R1 P0
+        # (consumed-placebo drop) consolidated:
+        # base_minus_1_period = t_pre_list[-2] (= F-2, the validated
+        # observed pre-period immediately before F-1). Using
+        # t_pre_list ensures correctness on ordered-categorical panels
+        # with unused intermediate levels (the validator's t_pre_list
+        # is built from observed contiguous pre-periods, not from the
+        # full dtype's category list). Then drop t_pre_list[-2] from
+        # pre_periods if present (the consumed placebo whose detrended
+        # residual is mechanically zero).
+        if trends_lin:
+            if len(t_pre_list) < 2:
+                raise ValueError(
+                    f"joint_pretrends_test(trends_lin=True) requires "
+                    f"at least 2 validated pre-periods so the per-"
+                    f"group slope Y[g, F-1] - Y[g, F-2] is identified. "
+                    f"Got t_pre_list={list(t_pre_list)!r}."
+                )
+            base_minus_1_period = t_pre_list[-2]
+            if base_minus_1_period in pre_periods_effective:
+                warnings.warn(
+                    f"joint_pretrends_test(trends_lin=True): dropping "
+                    f"period {base_minus_1_period!r} from pre_periods "
+                    f"— it is the 'consumed' placebo (the F-2 → F-1 "
+                    f"evolution used by the per-group slope "
+                    f"estimator), so under trends_lin its detrended "
+                    f"residual is mechanically zero. R's "
+                    f"`did_had(trends_lin=TRUE)` reduces max placebo "
+                    f"lag by 1 with the same effect.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                pre_periods_effective = [
+                    t for t in pre_periods_effective if t != base_minus_1_period
+                ]
+            if len(pre_periods_effective) == 0:
+                raise ValueError(
+                    f"joint_pretrends_test(trends_lin=True): no testable "
+                    f"placebo horizons remain after dropping the consumed "
+                    f"placebo at base_period - 1 = {base_minus_1_period!r}. "
+                    f"Pass at least one earlier observed pre-period when "
+                    f"using trends_lin=True."
+                )
 
     d_arr, dy_by_horizon, _ = _aggregate_for_joint_test(
         data_filtered,
@@ -3529,7 +3653,7 @@ def joint_pretrends_test(
         dose_col=dose_col,
         time_col=time_col,
         unit_col=unit_col,
-        horizons=list(pre_periods),
+        horizons=list(pre_periods_effective),
         base_period=base_period,
     )
     G = d_arr.shape[0]
@@ -3537,7 +3661,9 @@ def joint_pretrends_test(
     # HAD invariant: D_{g,t} = 0 for every g and every pre_period (and
     # for base_period - it is itself a pre-period relative to the
     # treatment onset). We check this on the passed-in panel subset.
-    needed_all_zero = list(pre_periods) + [base_period]
+    # Use pre_periods_effective so the consumed placebo (dropped above
+    # under trends_lin) is not in the dose-zero check window.
+    needed_all_zero = list(pre_periods_effective) + [base_period]
     subset_zero_check = data_filtered[data_filtered[time_col].isin(needed_all_zero)]
     if (subset_zero_check[dose_col] != 0).any():
         n_nonzero = int((subset_zero_check[dose_col] != 0).sum())
@@ -3550,6 +3676,54 @@ def joint_pretrends_test(
             f"invariant to hold in ALL periods used as placebo or "
             f"anchor."
         )
+
+    # ---- Apply trends_lin detrending (paper Eq 17 / Eq 18).
+    # base_minus_1_period was computed and validated above (before the
+    # consumed-placebo drop). Compute the per-group slope and apply the
+    # `(t - base) × slope` adjustment to each remaining horizon.
+    if trends_lin:
+        # Extract Y[g, base] and Y[g, base-1] in unit_col-sorted order
+        # (matching d_arr / dy_by_horizon ordering produced by
+        # _aggregate_for_joint_test's wide-pivot sort by index).
+        slope_subset = data_filtered[
+            data_filtered[time_col].isin([base_period, base_minus_1_period])
+        ]
+        wide_y = slope_subset.pivot(index=unit_col, columns=time_col, values=outcome_col)
+        wide_y = wide_y.sort_index()
+        if wide_y[base_period].isna().any() or wide_y[base_minus_1_period].isna().any():
+            raise ValueError(
+                f"joint_pretrends_test(trends_lin=True): NaN value(s) "
+                f"in outcome at base_period={base_period!r} or "
+                f"base_period-1={base_minus_1_period!r}. The slope "
+                f"estimator requires complete observations at both "
+                f"periods for every unit."
+            )
+        slope = wide_y[base_period].to_numpy(dtype=np.float64) - wide_y[
+            base_minus_1_period
+        ].to_numpy(dtype=np.float64)
+        # PR #392 R4 P0: build the detrending rank from OBSERVED
+        # periods (on data_filtered), not from the full categorical
+        # dtype. Otherwise unused intermediate categorical levels
+        # silently change the (t - base) multiplier and corrupt the
+        # joint statistic. Mirrors HAD.fit's
+        # `_aggregate_multi_period_first_differences` convention which
+        # uses `sorted(t_pre_list + t_post_list, ...)` for the
+        # event-time rank.
+        observed_rank = {
+            p: i
+            for i, p in enumerate(
+                sorted(
+                    set(data_filtered[time_col].unique()),
+                    key=lambda p: period_rank[p],
+                )
+            )
+        }
+        base_rank_observed = observed_rank[base_period]
+        # Apply detrending in place to remaining dy_by_horizon entries.
+        for t in pre_periods_effective:
+            label = str(t)
+            delta = observed_rank[t] - base_rank_observed  # < 0 for pre-periods
+            dy_by_horizon[label] = dy_by_horizon[label] - delta * slope
 
     # Phase 4.5 C: aggregate per-row weights/survey to per-unit (G,)
     # using the existing HAD helpers (constant-within-unit invariant
@@ -3653,6 +3827,7 @@ def joint_homogeneity_test(
     survey_design: Any = None,
     survey: Any = None,
     weights: Optional[np.ndarray] = None,
+    trends_lin: bool = False,
 ) -> StuteJointResult:
     """Joint Stute homogeneity-linearity test (paper Section 4.3 joint).
 
@@ -3695,6 +3870,22 @@ def joint_homogeneity_test(
         DEPRECATED alias for the per-row pweight shortcut. Prefer
         ``survey_design=SurveyDesign(weights='col_name')`` against your
         dataframe instead. Will be removed in the next minor release.
+    trends_lin : bool, default False, keyword-only
+        When ``True``, applies paper page-32 linear-trend detrending:
+        per-group slope estimated as ``Y[g, base] - Y[g, base - 1]``
+        and applied to each post-period horizon's outcome evolution as
+        ``(t - base) × slope`` (forward extrapolation into post). Same
+        slope estimator as :func:`joint_pretrends_test`. Mirrors R
+        ``DIDHAD::did_had(..., trends_lin=TRUE)`` on its joint
+        homogeneity surface (paper Section 4.3, Pierce-Schott p=0.40
+        anchor). **Requires** ``base_period`` to equal the last
+        validated pre-period (``t_pre_list[-1]``, the canonical
+        ``F-1`` anchor) AND ``F-2`` to be present in the panel so
+        the slope is identified. Direct callers passing a non-
+        terminal base get a ``ValueError`` — Eq 17 / R both anchor
+        at ``F-1``. Mutually exclusive with survey weighting; raises
+        ``NotImplementedError`` if combined. Default ``False``
+        preserves bit-exact backcompat.
 
     Returns
     -------
@@ -3720,6 +3911,19 @@ def joint_homogeneity_test(
     # Internal alias rebind: downstream code uses `survey` and `weights`.
     if survey_design is not None and survey is None:
         survey = survey_design
+
+    # ---- trends_lin × survey_design gate (PR #389 / Phase 4 R-parity).
+    # Twin of joint_pretrends_test guard. ----
+    if trends_lin and (survey is not None or weights is not None):
+        raise NotImplementedError(
+            "joint_homogeneity_test(trends_lin=True) is not yet "
+            "supported with survey weighting (`survey_design=` / "
+            "`survey=` / `weights=`). The per-group slope estimator's "
+            "weighted variant is not derived from the paper. Use "
+            "trends_lin=True WITHOUT survey weights, or use survey "
+            "weights WITHOUT trends_lin. Tracked in TODO.md as a "
+            "follow-up if user demand emerges."
+        )
 
     if len(post_periods) == 0:
         raise ValueError(
@@ -3768,6 +3972,14 @@ def joint_homogeneity_test(
     # time-varying post-dose would make the per-horizon refit on
     # `[1, D_g]` misspecify the regressor.
     n_periods = int(data[time_col].nunique())
+    if trends_lin and n_periods < 3:
+        raise ValueError(
+            f"joint_homogeneity_test(trends_lin=True) requires a "
+            f"panel with at least 3 distinct time periods so the "
+            f"per-group slope Y[g, base] - Y[g, base - 1] is "
+            f"identified. Got n_periods={n_periods}."
+        )
+    base_minus_1_period_validated: Any = None  # set inside validator block under trends_lin
     data_filtered: pd.DataFrame = data
     if n_periods >= 3:
         F_val, t_pre_list, t_post_list, data_filtered, _filter_info = (
@@ -3799,6 +4011,30 @@ def joint_homogeneity_test(
                 f"periods. Not-post entries: {not_post!r}. Validator's "
                 f"post-period set: {list(t_post_list)!r}."
             )
+        # PR #392 R3 P1 (non-terminal base guard + observed-period
+        # base-1 lookup, twin of joint_pretrends_test). Eq 17 anchors
+        # at F-1 and uses Y[F-1] - Y[F-2] as slope; require base ==
+        # t_pre_list[-1] AND derive base-1 from t_pre_list[-2].
+        if trends_lin and base_period != t_pre_list[-1]:
+            raise ValueError(
+                f"joint_homogeneity_test(trends_lin=True) requires "
+                f"base_period to equal the last validated pre-period "
+                f"({t_pre_list[-1]!r}, the canonical Eq 17 anchor "
+                f"F-1). Got base_period={base_period!r}. Anchoring at "
+                f"any other pre-period would compute a different "
+                f"slope and detrending that does not match paper "
+                f"Eq 17 / page 32 or R DIDHAD::did_had(trends_lin=TRUE)."
+            )
+        if trends_lin and len(t_pre_list) < 2:
+            raise ValueError(
+                f"joint_homogeneity_test(trends_lin=True) requires "
+                f"at least 2 validated pre-periods so the per-group "
+                f"slope Y[g, F-1] - Y[g, F-2] is identified. Got "
+                f"t_pre_list={list(t_pre_list)!r}."
+            )
+        # Capture the validator's predecessor for downstream use.
+        if trends_lin:
+            base_minus_1_period_validated = t_pre_list[-2]
 
     d_arr, dy_by_horizon, _ = _aggregate_for_joint_test(
         data_filtered,
@@ -3833,6 +4069,54 @@ def joint_homogeneity_test(
                 f"in each post-period (reciprocal of the pre-period "
                 f"zero-dose invariant)."
             )
+
+    # ---- Apply trends_lin detrending (paper Eq 17 / page 32 joint-Stute
+    # post-period homogeneity null with industry-specific linear trends).
+    # Twin of joint_pretrends_test detrending: per-group slope from
+    # Y[g, base] - Y[g, base-1], applied to each post-period horizon's
+    # dy_t. The post-period delta = t_rank - base_rank > 0, so the
+    # subtraction extrapolates the linear trend FORWARD into post-periods.
+    if trends_lin:
+        # PR #392 R3 P1: use the validator's t_pre_list[-2] as the
+        # predecessor (captured above as base_minus_1_period_validated).
+        # This is robust to ordered-categorical panels with unused
+        # intermediate levels because the validator builds t_pre_list
+        # from observed contiguous pre-periods, not the full dtype
+        # category list.
+        base_minus_1_period_h = base_minus_1_period_validated
+        slope_subset_h = data_filtered[
+            data_filtered[time_col].isin([base_period, base_minus_1_period_h])
+        ]
+        wide_y_h = slope_subset_h.pivot(index=unit_col, columns=time_col, values=outcome_col)
+        wide_y_h = wide_y_h.sort_index()
+        if wide_y_h[base_period].isna().any() or wide_y_h[base_minus_1_period_h].isna().any():
+            raise ValueError(
+                f"joint_homogeneity_test(trends_lin=True): NaN value(s) "
+                f"in outcome at base_period={base_period!r} or "
+                f"base_period-1={base_minus_1_period_h!r}. The slope "
+                f"estimator requires complete observations at both "
+                f"periods for every unit."
+            )
+        slope_h = wide_y_h[base_period].to_numpy(dtype=np.float64) - wide_y_h[
+            base_minus_1_period_h
+        ].to_numpy(dtype=np.float64)
+        # PR #392 R4 P0: build the detrending rank from OBSERVED
+        # periods on data_filtered (matching HAD.fit). Twin of
+        # joint_pretrends_test fix.
+        observed_rank_h = {
+            p: i
+            for i, p in enumerate(
+                sorted(
+                    set(data_filtered[time_col].unique()),
+                    key=lambda p: period_rank[p],
+                )
+            )
+        }
+        base_rank_observed_h = observed_rank_h[base_period]
+        for t in post_periods:
+            label = str(t)
+            delta = observed_rank_h[t] - base_rank_observed_h  # > 0 for post-periods
+            dy_by_horizon[label] = dy_by_horizon[label] - delta * slope_h
 
     # Phase 4.5 C: aggregate weights/survey to per-unit; thread through.
     # R2 P1 fix: subset row-level `weights` to data_filtered's rows BEFORE
@@ -4027,6 +4311,7 @@ def did_had_pretest_workflow(
     survey_design: Any = None,
     survey: Any = None,
     weights: Optional[np.ndarray] = None,
+    trends_lin: bool = False,
 ) -> HADPretestReport:
     """Run the HAD pre-test workflow (paper Section 4.2-4.3).
 
@@ -4049,9 +4334,17 @@ def did_had_pretest_workflow(
     users who need Yatchew robustness under multi-period data should
     call :func:`yatchew_hr_test` on each (base, post) pair manually.
 
-    Eq 18 linear-trend detrending (paper Section 5.2 Pierce-Schott
-    application) is a Phase 4 follow-up; the event-study path here
-    implements the simpler mean-independence / linearity nulls.
+    Eq 17 / Eq 18 linear-trend detrending (paper Section 5.2 Pierce-
+    Schott application) is now SHIPPED on the event-study path via
+    the ``trends_lin`` keyword-only parameter (PR #392 / Phase 4
+    R-parity). When ``trends_lin=True``, this workflow forwards the
+    flag to both :func:`joint_pretrends_test` and
+    :func:`joint_homogeneity_test`; the consumed placebo at
+    ``base_period - 1`` is auto-dropped from step 2 and the workflow
+    skips step 2 (``pretrends_joint=None``) if no earlier placebo
+    survives. Mirrors R ``DIDHAD::did_had(..., trends_lin=TRUE)``.
+    Mutually exclusive with ``aggregate="overall"`` (raises
+    ``NotImplementedError``).
 
     Parameters
     ----------
@@ -4096,6 +4389,24 @@ def did_had_pretest_workflow(
         be removed in the next minor release. Currently routed through a
         synthetic trivial ``ResolvedSurveyDesign`` so the same kernel
         handles both paths.
+    trends_lin : bool, default False, keyword-only
+        Forwards into :func:`joint_pretrends_test` and
+        :func:`joint_homogeneity_test` on the event-study dispatch
+        path. Mirrors R ``DIDHAD::did_had(..., trends_lin=TRUE)``.
+        Requires ``aggregate="event_study"``; raises
+        ``NotImplementedError`` on ``aggregate="overall"`` (the
+        overall path's qug + stute + yatchew block has no
+        joint-pretest surface). Mutually exclusive with survey
+        weighting at the joint-pretest layer; the joint wrappers
+        raise ``NotImplementedError`` if combined. **Effective step-2
+        rule under trends_lin**: the consumed placebo at
+        ``base_period - 1`` is dropped before step 2 is dispatched;
+        if no earlier placebo survives the drop (e.g., a minimal
+        4-period panel with ``F=3`` where ``base_period=2`` and the
+        only earlier placebo at ``t=1`` is the consumed one), step 2
+        is skipped (``pretrends_joint=None``) and the workflow
+        proceeds to step 3 (homogeneity). Default ``False`` preserves
+        bit-exact backcompat.
 
     Returns
     -------
@@ -4167,6 +4478,22 @@ def did_had_pretest_workflow(
     if aggregate not in _VALID_AGGREGATES:
         raise ValueError(
             f"aggregate must be one of {list(_VALID_AGGREGATES)!r}; " f"got {aggregate!r}."
+        )
+
+    # ---- trends_lin scope gate (PR #392 R1 P1).
+    # `trends_lin=True` is only meaningful on the event-study path because
+    # it forwards into joint_pretrends_test / joint_homogeneity_test. The
+    # overall path runs qug + stute + yatchew on a 2-period panel and has
+    # no joint-pretest surface to receive the kwarg. Front-door reject
+    # rather than silently ignore.
+    if trends_lin and aggregate != "event_study":
+        raise NotImplementedError(
+            "did_had_pretest_workflow(trends_lin=True) requires "
+            "aggregate='event_study' (the trends_lin kwarg forwards "
+            "into the joint pretests, which only run on the event-"
+            "study path). The overall path's qug + stute + yatchew "
+            "block has no per-group slope surface; pass a multi-"
+            "period panel and aggregate='event_study'."
         )
 
     # Three-way mutex on survey_design / survey / weights (data-in pattern).
@@ -4307,6 +4634,21 @@ def did_had_pretest_workflow(
         # whose lexical and chronological order disagree (e.g. "q10" <
         # "q2" lexically but > chronologically).
         earlier_pre = list(t_pre_list[:-1])
+        # PR #392 R2 P1: under trends_lin=True, the consumed placebo at
+        # base_period - 1 (= t_pre_list[-2] in the contiguous validated
+        # pre-period list) is dropped by joint_pretrends_test downstream
+        # because its detrended residual is mechanically zero. Pre-filter
+        # it here so we can preserve the EXISTING "no earlier placebo →
+        # pretrends_joint=None, skip step 2" verdict path (rather than
+        # propagating joint_pretrends_test's `ValueError("no testable
+        # placebo horizons remain")` and aborting the whole workflow).
+        # The minimal valid trends_lin event-study panel (4 periods,
+        # F=3, base=2, only earlier placebo at 1 = the consumed one)
+        # hits this path; the workflow should still run step 3
+        # (homogeneity) and emit the standard "step 2 skipped" verdict.
+        if trends_lin and len(t_pre_list) >= 2:
+            consumed_placebo_period = t_pre_list[-2]
+            earlier_pre = [t for t in earlier_pre if t != consumed_placebo_period]
         # PR #376 R2 P3: when `weights=joint_weights` is forwarded to the joint
         # wrappers (the only joint-internal entry that takes a numpy array),
         # the wrapper would re-emit a DeprecationWarning. Suppress those
@@ -4335,6 +4677,7 @@ def did_had_pretest_workflow(
                     seed=seed,
                     survey_design=joint_survey,
                     weights=joint_weights,
+                    trends_lin=trends_lin,
                 )
             else:
                 pretrends_joint = None
@@ -4354,6 +4697,7 @@ def did_had_pretest_workflow(
                 seed=seed,
                 survey_design=joint_survey,
                 weights=joint_weights,
+                trends_lin=trends_lin,
             )
 
         # Event-study `all_pass`. On the unweighted path, every implemented
