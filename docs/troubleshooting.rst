@@ -498,17 +498,36 @@ is meaningfully positive relative to the dose scale.
 
 .. code-block:: python
 
-   # Inspect the dose support before fitting
    import numpy as np
-   d = data['dose'].to_numpy()
-   print(data['dose'].describe())
+   import pandas as pd
+   from diff_diff import HeterogeneousAdoptionDiD
+
+   # Build a HAD-shape panel: D=0 in pre-periods (t < F), D > 0 only at F+.
+   rng = np.random.default_rng(42)
+   G, F, T = 200, 4, 5
+   doses = rng.beta(0.5, 1.0, size=G)
+   rows = []
+   for g in range(G):
+       for t in range(1, T + 1):
+           y = (rng.normal()
+                + (doses[g] + doses[g] ** 2) * (t >= F)
+                + rng.normal(0, 0.5))
+           d = doses[g] if t >= F else 0.0
+           rows.append({'unit': g, 'period': t, 'y': y, 'dose': d})
+   had_data = pd.DataFrame(rows)
+
+   # Inspect the dose support before fitting
+   d = had_data['dose'].to_numpy()
+   print(had_data['dose'].describe())
    print(f"d.min() = {d.min():.6g}; "
          f"0.01 * median(|d|) = {0.01 * np.median(np.abs(d)):.6g}; "
          f"d.min() < threshold => Design 1' (WAS)")
 
    # Check the resolved estimand after fitting
-   results = est.fit(data, outcome_col='y', unit_col='unit',
-                     time_col='period', dose_col='dose')
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(had_data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose',
+                     aggregate='event_study')
    print(f"Resolved: {results.target_parameter}")
 
    # If you intend Design 1' but `d.min()` exceeds the threshold, verify
@@ -535,6 +554,37 @@ SE path is not used here).
 **Solutions:**
 
 .. code-block:: python
+
+   import numpy as np
+   import pandas as pd
+   from diff_diff import HeterogeneousAdoptionDiD
+
+   # Build a HAD panel with a heavy boundary mass at d_lower so the
+   # modal fraction at d.min() exceeds 2% and `_detect_design` resolves
+   # to `mass_point`.
+   rng = np.random.default_rng(42)
+   G, F, T = 200, 4, 5
+   d_lower = 0.5
+   mass_frac = 0.3
+   doses = np.where(
+       rng.uniform(size=G) < mass_frac,
+       d_lower,
+       rng.uniform(d_lower + 0.1, 2.0, size=G),
+   )
+   rows = []
+   for g in range(G):
+       for t in range(1, T + 1):
+           y = (rng.normal()
+                + doses[g] * (t >= F)
+                + rng.normal(0, 0.5))
+           d = doses[g] if t >= F else 0.0
+           rows.append({'unit': g, 'period': t, 'y': y, 'dose': d})
+   had_data = pd.DataFrame(rows)
+
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(had_data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose',
+                     aggregate='event_study')
 
    # Inspect the resolved design
    print(f"Design: {results.design}")  # 'mass_point' here

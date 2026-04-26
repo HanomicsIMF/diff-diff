@@ -365,11 +365,8 @@ _CONTEXT_DEPENDENT_SNIPPETS = {
     "r_comparison:block2",
     "r_comparison:block3",
     "r_comparison:block4",
-    "r_comparison:block6",
     "r_comparison:block7",
     "troubleshooting:block8",
-    "troubleshooting:block17",
-    "troubleshooting:block18",
 }
 
 
