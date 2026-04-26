@@ -392,17 +392,36 @@ before estimation; see :doc:`api/had` for the full API and SE-regime contract.
 
 .. code-block:: python
 
+   import numpy as np
+   import pandas as pd
    from diff_diff import HeterogeneousAdoptionDiD, did_had_pretest_workflow
 
-   pretests = did_had_pretest_workflow(data, outcome_col='y', unit_col='unit',
-                                       time_col='period', dose_col='dose')
+   # Build a HAD-shape panel: D=0 in pre-periods (t < F), D > 0 only at F+.
+   rng = np.random.default_rng(42)
+   G, F, T = 200, 4, 5
+   doses = rng.beta(0.5, 1.0, size=G)
+   rows = []
+   for g in range(G):
+       for t in range(1, T + 1):
+           y = (rng.normal()
+                + (doses[g] + doses[g] ** 2) * (t >= F)
+                + rng.normal(0, 0.5))
+           d = doses[g] if t >= F else 0.0
+           rows.append({'unit': g, 'period': t, 'y': y, 'dose': d})
+   had_data = pd.DataFrame(rows)
+
+   pretests = did_had_pretest_workflow(had_data, outcome_col='y', unit_col='unit',
+                                       time_col='period', dose_col='dose',
+                                       aggregate='event_study')
 
    est = HeterogeneousAdoptionDiD()
-   results = est.fit(data, outcome_col='y', unit_col='unit',
-                     time_col='period', dose_col='dose')
+   results = est.fit(had_data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose',
+                     aggregate='event_study')
 
-   print(f"Resolved estimand: {results.target_parameter}")
-   print(f"Estimate: {results.att:.3f}")
+   # Event-study results: per-horizon WAS at each event time
+   for e, att in zip(results.event_times, results.att):
+       print(f"  e={e}: {att:.3f}")
 
 Efficient DiD
 ~~~~~~~~~~~~~
