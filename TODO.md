@@ -120,7 +120,7 @@ Deferred items from PR reviews that were not addressed before merge.
 |-------|----------|----|----------|
 | ImputationDiD event-study SEs recompute full conservative variance per horizon (should cache A0/A1 factorization) | `imputation.py` | #141 | Low |
 | Rust faer SVD ndarray-to-faer conversion overhead (minimal vs SVD cost) | `rust/src/linalg.rs:67` | #115 | Low |
-| Unrelated label events (e.g., adding `bug` label) re-trigger CI workflows when `ready-for-ci` is already present; filter `labeled`/`unlabeled` events to only `ready-for-ci` transitions | `.github/workflows/rust-test.yml`, `notebooks.yml` | #269 | Low |
+| Unrelated label events (e.g., adding `bug` label) re-trigger CI workflows when `ready-for-ci` is already present; filter `labeled`/`unlabeled` events to only `ready-for-ci` transitions | `.github/workflows/rust-test.yml`, `notebooks.yml`, `docs-tests.yml` | #269 | Low |
 | `bread_inv` as a performance kwarg on `compute_robust_vcov` to avoid re-inverting `(X'WX)` when the caller already has it. Deferred from Phase 1a for scope. HC2 and HC2+BM both need the bread inverse, so a shared hint would save one `np.linalg.solve` per sandwich. | `linalg.py::compute_robust_vcov` | Phase 1a | Low |
 | Rust-backend HC2 implementation. Current Rust path only supports HC1; HC2 and CR2 Bell-McCaffrey fall through to the NumPy backend. For large-n fits this is noticeable. | `rust/src/linalg.rs` | Phase 1a | Low |
 | CR2 Bell-McCaffrey DOF uses a naive `O(n² k)` per-coefficient loop over cluster pairs. Pustejovsky-Tipton (2018) Appendix B has a scores-based formulation that avoids the full `n × n` `M` matrix. Switch when a user hits a large-`n` cluster-robust design. | `linalg.py::_compute_cr2_bm` | Phase 1a | Low |

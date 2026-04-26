@@ -1,0 +1,62 @@
+name: Documentation Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'diff_diff/**'
+      - 'tests/test_doc_snippets.py'
+      # tests/conftest.py is auto-loaded by pytest for the snippet
+      # test run and mutates sys.path + MPLBACKEND (conftest.py:14, 18);
+      # changes there can break snippet exec without touching the test
+      # file itself.
+      - 'tests/conftest.py'
+      - 'pyproject.toml'
+      - '.github/workflows/docs-tests.yml'
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - 'docs/**'
+      - 'diff_diff/**'
+      - 'tests/test_doc_snippets.py'
+      - 'tests/conftest.py'
+      - 'pyproject.toml'
+      - '.github/workflows/docs-tests.yml'
+  schedule:
+    # Weekly Sunday 6am UTC - smoke test that snippets still execute
+    # against current upstream deps (mirrors notebooks.yml schedule).
+    - cron: '0 6 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  doc-snippets:
+    name: Validate RST code snippets
+    if: >-
+      github.event_name != 'pull_request'
+      || contains(github.event.pull_request.labels.*.name, 'ready-for-ci')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          # 3.14 to mirror Pure Python Fallback (the only existing job
+          # that actually ran these tests). notebooks.yml uses 3.11 for
+          # nbmake compat, not relevant here.
+          python-version: '3.14'
+
+      - name: Install dependencies
+        # Keep in sync with pyproject.toml [project.dependencies] and [project.optional-dependencies.dev]
+        run: pip install numpy pandas scipy pytest
+
+      - name: Run doc snippet tests in pure Python mode
+        # PYTHONPATH=. lets the test import diff_diff directly from
+        # source without invoking the maturin/Rust build (mirrors Pure
+        # Python Fallback at rust-test.yml:189-193).
+        run: PYTHONPATH=. DIFF_DIFF_BACKEND=python pytest tests/test_doc_snippets.py -v
