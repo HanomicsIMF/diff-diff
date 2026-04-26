@@ -7270,6 +7270,157 @@ class TestByPathTrendsLinear:
                     ),
                 )
 
+    def test_multi_baseline_panel_emits_r_deviation_warning(self):
+        """When ``by_path + trends_linear`` is fit on a panel where
+        switchers have multiple ``D_{g,1}`` baseline values, the
+        estimator must emit a ``UserWarning`` documenting the
+        deviation from R's per-path full-pipeline call. Mirrors the
+        analogous ``by_path + controls`` warning at
+        ``test_multi_baseline_panel_emits_r_deviation_warning`` in
+        ``TestByPathControls``.
+        """
+        # 3 joiners (D_{g,1}=0) + 3 leavers (D_{g,1}=1) + 4 always-
+        # treated + 4 never-treated controls; F_g >= 3 so trends_lin's
+        # F_g==2 filter doesn't drop everyone.
+        rng = np.random.default_rng(7)
+        rows = []
+
+        def _add(group, treatment_path):
+            for t, d in enumerate(treatment_path):
+                y = d * 2.0 + rng.normal(0, 0.1) + 0.1 * t
+                rows.append(
+                    {"group": group, "period": t, "treatment": d, "outcome": y}
+                )
+
+        # F_g=3 joiners (path 0,0,1,1,1,1)
+        for g in (1, 2, 3):
+            _add(g, [0, 0, 1, 1, 1, 1])
+        # F_g=4 leavers (path 1,1,1,0,0,0)
+        for g in (4, 5, 6):
+            _add(g, [1, 1, 1, 0, 0, 0])
+        # Always-treated controls (D_{g,1}=1)
+        for g in (7, 8, 9, 10):
+            _add(g, [1, 1, 1, 1, 1, 1])
+        # Never-treated controls (D_{g,1}=0)
+        for g in (11, 12, 13, 14):
+            _add(g, [0, 0, 0, 0, 0, 0])
+        data = pd.DataFrame(rows)
+
+        # Sanity: switchers have both D_{g,1}=0 and D_{g,1}=1 baselines
+        switcher_ids = data[data["group"].isin([1, 2, 3, 4, 5, 6])]
+        baselines = (
+            switcher_ids[switcher_ids["period"] == 0]
+            .groupby("group")["treatment"]
+            .first()
+        )
+        assert sorted(baselines.unique()) == [0, 1]
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=2)
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+
+        deviation_msgs = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, UserWarning)
+            and "by_path + trends_linear" in str(w.message)
+            and "switcher baselines" in str(w.message)
+        ]
+        assert deviation_msgs, (
+            "Expected a UserWarning mentioning 'by_path + trends_linear' "
+            "and 'switcher baselines D_{g,1}' on a multi-baseline panel. "
+            f"Captured warnings: {[str(w.message) for w in caught]}"
+        )
+
+    def test_single_baseline_panel_does_not_emit_r_deviation_warning(self):
+        """The multi-baseline R-deviation warning must NOT fire on a
+        single-baseline panel under ``by_path + trends_linear``. Pinned
+        against the standard fixture (all joiners, ``D_{g,1}=0``)."""
+        data = _by_path_data_with_trends_linear()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+        deviation_msgs = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, UserWarning)
+            and "by_path + trends_linear" in str(w.message)
+            and "switcher baselines" in str(w.message)
+        ]
+        assert not deviation_msgs, (
+            "Multi-baseline trends_linear deviation warning fired on a "
+            f"single-baseline panel: {deviation_msgs}"
+        )
+
+    def test_single_baseline_heterogeneous_F_g_does_not_warn(self):
+        """Single-baseline switcher panel with HETEROGENEOUS ``F_g``
+        across paths must NOT trigger the multi-baseline trends_linear
+        warning, even though F_g varies. Pin the precise warning
+        condition: it's switcher-baseline multiplicity, NOT F_g
+        multiplicity, that triggers the divergence pattern."""
+        # _by_path_data_with_trends_linear has F_g in {4,5,6,7,8,9}
+        # across 3 paths; all switchers have D_{g,1}=0.
+        data = _by_path_data_with_trends_linear()
+        # Sanity: F_g varies across switchers
+        switcher_first_treat = (
+            data[data["treatment"] == 1].groupby("group")["period"].min()
+        )
+        all_groups_first_treat = (
+            data.groupby("group")["treatment"].agg(lambda x: x.iloc[0])
+        )
+        # Drop always-treated (D_{g,1}=1) groups to isolate switchers
+        switcher_groups = all_groups_first_treat[all_groups_first_treat == 0].index
+        switcher_F_g = switcher_first_treat[switcher_first_treat.index.isin(switcher_groups)]
+        # _by_path_data_with_trends_linear has 80 switchers, 20 always-
+        # treated, 20 never-treated; switchers all have D_{g,1}=0 and
+        # F_g spans {4,5,6,7,8,9} (6 distinct values)
+        assert switcher_F_g.nunique() >= 2, (
+            "Test fixture pre-condition violated: F_g should be heterogeneous "
+            "across switchers"
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=3)
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+        deviation_msgs = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, UserWarning)
+            and "by_path + trends_linear" in str(w.message)
+            and "switcher baselines" in str(w.message)
+        ]
+        assert not deviation_msgs, (
+            f"Heterogeneous F_g triggered the warning: {deviation_msgs}"
+        )
+        # Sanity: fit produced finite per-path effects
+        assert res.path_effects is not None and len(res.path_effects) >= 1
+
     @pytest.mark.slow
     def test_bootstrap_cumulated_nan_consistent_when_n_bootstrap_one(self):
         """n_bootstrap=1: bootstrap SE non-finite → cumulated SE/t/p/CI NaN.

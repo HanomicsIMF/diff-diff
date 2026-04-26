@@ -1653,6 +1653,41 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     UserWarning,
                     stacklevel=2,
                 )
+            # Multi-baseline switcher panel detection (`by_path + trends_linear`):
+            # mirror the analogous warning fired by `by_path + controls` at
+            # `:1565-1584`. Python first-differences once globally before
+            # path enumeration; R `did_multiplegt_dyn(..., by_path, trends_lin)`
+            # re-runs the full pipeline (including first-differencing) per
+            # path's restricted subsample. On single-baseline switcher
+            # panels the two architectures coincide; on multi-baseline
+            # switcher panels (some switchers have `D_{g,1}=0`, others
+            # `D_{g,1}=1`) per-path point estimates can diverge — warn the
+            # user explicitly so they don't silently consume estimates
+            # that disagree with R. The check filters to switcher groups
+            # only (never-switchers / always-treated controls don't
+            # contribute to switcher baseline multiplicity).
+            if self.by_path is not None:
+                _switcher_mask_tl = first_switch_idx_arr >= 0
+                if _switcher_mask_tl.any():
+                    _switcher_baselines_tl = baselines[_switcher_mask_tl]
+                    if np.unique(_switcher_baselines_tl).size > 1:
+                        warnings.warn(
+                            "by_path + trends_linear: switcher baselines "
+                            "D_{g,1} take multiple values in this panel. "
+                            "Python first-differences once on the full "
+                            "panel before path enumeration; R "
+                            "`did_multiplegt_dyn(..., by_path, trends_lin)` "
+                            "re-runs the full pipeline (including "
+                            "first-differencing) on each path's restricted "
+                            "subsample, so per-path point estimates can "
+                            "diverge between Python and R on this panel. "
+                            "See `docs/methodology/REGISTRY.md` "
+                            "(`Note (Phase 3 by_path ...)` -> Per-path "
+                            "linear-trends DID^{fd}) for the full "
+                            "deviation contract.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
             N_mat_orig = N_mat.copy()
             Y_mat, N_mat = _compute_first_differenced_matrix(Y_mat, N_mat)
 
