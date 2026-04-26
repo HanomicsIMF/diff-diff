@@ -12,8 +12,13 @@ Single-horizon tests:
    ``E[ΔY | D_2]`` with Mammen (1993) wild bootstrap p-value (paper
    Appendix D).
 3. :func:`yatchew_hr_test` - heteroskedasticity-robust variance-ratio
-   linearity test (paper Theorem 7 / Equation 29). Feasible at
-   ``G >= 100k``.
+   specification test (paper Theorem 7 / Equation 29). Feasible at
+   ``G >= 100k``. Two nulls via the keyword-only ``null=`` argument:
+   ``"linearity"`` (default; paper Theorem 7, fits ``Y ~ 1 + D``) and
+   ``"mean_independence"`` (R-parity extension mirroring R
+   ``YatchewTest::yatchew_test(order=0)``; fits ``Y ~ 1``). The
+   downstream variance-ratio machinery is shared between the two
+   modes — only the residual definition differs.
 
 Joint / multi-period tests (Phase 3 follow-up):
 
@@ -323,12 +328,20 @@ class StuteTestResults:
 class YatchewTestResults:
     """Result of :func:`yatchew_hr_test` (paper Theorem 7 / Equation 29).
 
-    Heteroskedasticity-robust test of the same linearity null as
-    :func:`stute_test`, but using Yatchew's difference-based variance
-    estimator. The test statistic
-    ``T_hr = sqrt(G) * (sigma2_lin - sigma2_diff) / sigma2_W``
-    is asymptotically N(0, 1) under H_0; rejection uses the one-sided
-    standard-normal critical value.
+    Heteroskedasticity-robust specification test using Yatchew's
+    difference-based variance estimator. Two nulls are supported via
+    the ``null=`` argument on :func:`yatchew_hr_test` and reflected on
+    the ``null_form`` attribute below: ``"linearity"`` (default; paper
+    Theorem 7, the same null as :func:`stute_test`, residuals from OLS
+    ``dy ~ 1 + d``) and ``"mean_independence"`` (R-parity extension
+    mirroring R ``YatchewTest::yatchew_test(order=0)``, residuals from
+    intercept-only OLS ``dy ~ 1``). The test statistic
+    ``T_hr = sqrt(G) * (sigma2_lin - sigma2_diff) / sigma2_W`` is
+    asymptotically N(0, 1) under H_0 in both modes; rejection uses the
+    one-sided standard-normal critical value. Only the residual
+    definition (and therefore ``sigma2_lin``) differs between modes —
+    the ``sigma2_diff`` / ``sigma2_W`` / sort-by-``d`` machinery is
+    shared.
 
     Attributes
     ----------

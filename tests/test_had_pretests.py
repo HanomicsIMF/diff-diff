@@ -842,6 +842,16 @@ class TestJSONSerialization:
         r = yatchew_hr_test(d, dy)
         json.dumps(r.to_dict())  # must not raise
 
+    def test_yatchew_to_dict_carries_null_form(self):
+        """``to_dict()`` surfaces ``null_form`` for both modes."""
+        d, dy = _linear_dgp(G=50)
+        r_lin = yatchew_hr_test(d, dy)  # default = "linearity"
+        r_mi = yatchew_hr_test(d, dy, null="mean_independence")
+        d_lin = json.loads(json.dumps(r_lin.to_dict()))
+        d_mi = json.loads(json.dumps(r_mi.to_dict()))
+        assert d_lin["null_form"] == "linearity"
+        assert d_mi["null_form"] == "mean_independence"
+
     def test_report_to_dict_is_json_safe(self):
         """Commit criterion 16: json.dumps(report.to_dict()) succeeds."""
         d, dy = _linear_dgp(G=50)
@@ -1192,6 +1202,26 @@ class TestSummary:
         s = r.summary()
         assert len(s) > 0
         assert "Yatchew" in s
+
+    def test_yatchew_summary_switches_title_on_null_form(self):
+        """``summary()`` renders the linearity / mean-independence title
+        per ``null_form``."""
+        d, dy = _linear_dgp(G=50)
+        s_lin = yatchew_hr_test(d, dy).summary()
+        s_mi = yatchew_hr_test(d, dy, null="mean_independence").summary()
+        assert "linearity test" in s_lin
+        assert "mean-independence test" in s_mi
+        # Negative controls — each title is mode-specific.
+        assert "mean-independence test" not in s_lin
+        assert "linearity test" not in s_mi
+
+    def test_yatchew_repr_includes_null_form(self):
+        """``repr()`` carries ``null_form=`` for both modes."""
+        d, dy = _linear_dgp(G=50)
+        r_lin = yatchew_hr_test(d, dy)
+        r_mi = yatchew_hr_test(d, dy, null="mean_independence")
+        assert "null_form='linearity'" in repr(r_lin)
+        assert "null_form='mean_independence'" in repr(r_mi)
 
     def test_report_summary_bundles_all(self):
         d, dy = _linear_dgp(G=50)
