@@ -371,6 +371,8 @@ sources:
         type: methodology
       - path: docs/api/had.rst
         type: api_reference
+      - path: docs/tutorials/20_had_brand_campaign.ipynb
+        type: tutorial
       - path: README.md
         section: "Estimators (one-line catalog entry)"
         type: user_guide
@@ -379,6 +381,10 @@ sources:
       - path: diff_diff/guides/llms.txt
         section: "Estimators"
         type: user_guide
+      - path: docs/practitioner_decision_tree.rst
+        section: "Universal Rollout (No Untreated Markets)"
+        type: user_guide
+        note: "Tip cross-link to T20 in the no-untreated section"
       # Note: llms-full.txt does not yet have a HeterogeneousAdoptionDiD section
       # (deferred to TODO.md Phase 5 follow-up); the dependency mapping will be
       # added when that section lands.

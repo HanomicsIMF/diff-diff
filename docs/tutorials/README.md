@@ -95,6 +95,14 @@ Practitioner walkthrough for measuring lift from on/off promotional pulses acros
 - Multi-horizon event study with `L_max` + multiplier bootstrap
 - Stakeholder communication template + drift guards
 
+### 20. HAD for National Brand Campaign with Regional Spend Intensity (`20_had_brand_campaign.ipynb`)
+Practitioner walkthrough for measuring per-dollar lift when every market is treated at a different dose level and no never-treated unit exists (comparison comes from the dose variation across markets):
+- The measurement problem framed for heterogeneous-adoption (no-untreated-control) panels
+- `HAD` overall fit on a 2-period collapse, with `design="auto"` resolving to `continuous_near_d_lower` (Design 1) and target `WAS_d_lower` (per-$1K marginal effect above the lightest-touch DMA's spend)
+- Multi-week event study showing per-week dynamics with pre-launch placebos
+- Stakeholder communication template flagging the Assumption 5/6 identification caveat
+- Companion drift-test file (`tests/test_t20_had_brand_campaign_drift.py`)
+
 ## Running the Notebooks
 
 1. Install diff-diff with dependencies:
