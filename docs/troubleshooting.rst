@@ -483,28 +483,37 @@ HeterogeneousAdoptionDiD (HAD) Issues
 **Problem:** ``HeterogeneousAdoptionDiD`` resolves ``target_parameter`` to
 ``"WAS_d_lower"`` when you expected ``"WAS"`` (or vice versa).
 
-**Cause:** HAD auto-detects the design path from the dose distribution. Design
-1' (QUG case, ``d_lower = 0``) targets WAS by treating the smallest-dose
-units as a quasi-untreated anchor; Design 1 (no QUG, ``d_lower > 0``) targets
-``WAS_{d_lower}``. If your data has no observations at ``dose = 0`` the
-estimator routes to Design 1 even when you intend a WAS interpretation.
+**Cause:** HAD auto-detects the design path from the dose distribution. The
+``_detect_design`` rule resolves to Design 1' (``continuous_at_zero``,
+targets WAS) when EITHER ``d.min() == 0`` exactly OR ``d.min()`` is a small
+positive value below ``0.01 * median(|d|)`` (the small-share-of-treated
+escape clause). Otherwise (``d.min()`` larger than that threshold) the
+estimator routes to Design 1, with a further check for mass-point structure
+(modal fraction at ``d.min()`` exceeding 2% routes to ``mass_point``;
+otherwise ``continuous_near_d_lower``); both Design 1 paths target
+``WAS_{d_lower}``. So a Design 1 resolution only fires when ``d.min()``
+is meaningfully positive relative to the dose scale.
 
 **Solutions:**
 
 .. code-block:: python
 
    # Inspect the dose support before fitting
+   import numpy as np
+   d = data['dose'].to_numpy()
    print(data['dose'].describe())
-   print((data['dose'] == 0).sum(), "observations at dose=0")
+   print(f"d.min() = {d.min():.6g}; "
+         f"0.01 * median(|d|) = {0.01 * np.median(np.abs(d)):.6g}; "
+         f"d.min() < threshold => Design 1' (WAS)")
 
    # Check the resolved estimand after fitting
    results = est.fit(data, outcome_col='y', unit_col='unit',
                      time_col='period', dose_col='dose')
    print(f"Resolved: {results.target_parameter}")
 
-   # If you genuinely have a Design 1' panel but lack dose=0 rows, verify
-   # the dose variable encoding (e.g. log-transformed doses where 0 was
-   # mapped to a small positive value)
+   # If you intend Design 1' but `d.min()` exceeds the threshold, verify
+   # the dose-variable encoding (e.g. log-transformed doses where 0 was
+   # mapped to a small positive value larger than 1% of the median).
 
 "Mass-point fit fallback"
 ~~~~~~~~~~~~~~~~~~~~~~~~~

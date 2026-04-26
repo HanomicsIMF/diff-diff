@@ -225,14 +225,14 @@ August 2025) covers the QUG case (Design 1', ``d_lower = 0``) from the
 same arXiv paper.
 
 ``diff-diff`` ships :class:`~diff_diff.HeterogeneousAdoptionDiD`, which
-implements the broader surface of de Chaisemartin, Ciccia, D'Haultfoeuille
-and Knau (2026, arXiv:2405.04465v6): both Design 1' (QUG case, targets
-**WAS**) **and** Design 1 (no QUG, ``d_lower > 0``, targets
-``WAS_{d_lower}`` under Assumption 6 or sign-only under Assumption 5), the
-multi-period event-study extension (paper Appendix B.2), and survey-design
-integration via Binder (1983) Taylor-series linearization. The pretest
-battery :func:`~diff_diff.did_had_pretest_workflow` adjudicates the design
-path and surfaces assumption violations.
+implements de Chaisemartin, Ciccia, D'Haultfoeuille and Knau (2026,
+arXiv:2405.04465v6) and adds two surfaces beyond the QUG-focused R
+package: Design 1 (no QUG, ``d_lower > 0``, targets ``WAS_{d_lower}`` under
+Assumption 6 or sign-only under Assumption 5), and survey-design
+integration via Binder (1983) Taylor-series linearization (sampling weights
++ optional strata / PSU / FPC). The pretest battery
+:func:`~diff_diff.did_had_pretest_workflow` adjudicates the design path
+and surfaces assumption violations.
 
 .. code-block:: python
 
@@ -420,8 +420,7 @@ Feature Comparison Table
    HeterogeneousAdoptionDiD (dCDH 2026) overlaps with the dedicated R
    package ``DIDHAD`` (de Chaisemartin et al., 2025), which covers the
    QUG case (Design 1'); diff-diff additionally covers Design 1 (no QUG,
-   ``WAS_{d_lower}``), the multi-period event-study extension (paper
-   Appendix B.2), and survey-design integration via Binder TSL.
+   ``WAS_{d_lower}``) and survey-design integration via Binder TSL.
 
 Migration Tips
 --------------
@@ -439,9 +438,8 @@ Migration Tips
 5. **Missing data**: diff-diff requires complete data; use ``balance_panel()``
    or ``dropna()`` first
 
-6. **Heterogeneous Adoption (HAD)**: If you need the broader HAD surface
-   beyond the QUG case that the R ``DIDHAD`` package covers - Design 1
-   (no QUG, ``WAS_{d_lower}``), the multi-period event-study extension, or
+6. **Heterogeneous Adoption (HAD)**: If you need surfaces the R ``DIDHAD``
+   package does not cover - Design 1 (no QUG, ``WAS_{d_lower}``) or
    survey-design integration - reach for
    :class:`~diff_diff.HeterogeneousAdoptionDiD`. See the
    `Heterogeneous Adoption (HAD)`_ section above for the migration pattern.

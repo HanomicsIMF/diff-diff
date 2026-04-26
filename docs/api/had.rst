@@ -65,11 +65,16 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
    single SE contract under ``survey_design=`` lands. (Tracked in
    ``TODO.md``; the deprecation warning emitted by ``HeterogeneousAdoptionDiD.fit``
    spells the migration out per call site.) On array-in HAD pretest
-   helpers (``stute_test``, ``yatchew_hr_test``, ``stute_joint_pretest``,
-   ``qug_test``) the pweight-only shortcut is
+   helpers (``stute_test``, ``yatchew_hr_test``, ``stute_joint_pretest``)
+   the pweight-only shortcut is
    ``survey_design=make_pweight_design(weights)``; data-in surfaces use
    ``survey_design=SurveyDesign(weights="col_name", ...)`` against
-   ``data`` instead.
+   ``data`` instead. ``qug_test`` is the exception: the QUG step has no
+   survey-aware migration target (Phase 4.5 C0 decision; see methodology
+   REGISTRY) and permanently raises ``NotImplementedError`` on any of
+   ``survey_design=`` / ``survey=`` / ``weights=``. The composite
+   workflow ``did_had_pretest_workflow`` handles this by skipping QUG
+   under survey/weighted dispatch and emitting a ``UserWarning``.
 
    A simultaneous confidence band (sup-t) is available only on the
    **weighted event-study path** via ``cband=True``. Joint cross-horizon
