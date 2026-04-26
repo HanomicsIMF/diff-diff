@@ -757,6 +757,18 @@ class HADCarouselPDF(FPDF):
             self.set_text_color(*GRAY)
             self.cell(box_w - bar_w - 24, 10, desc)
 
+        # Methodology footnote (transparency on the WAS / WAS_d_lower split)
+        footnote_y = start_y + len(items) * (box_h + gap) + 8
+        self.set_xy(0, footnote_y)
+        self.set_font("Helvetica", "I", 10)
+        self.set_text_color(*LIGHT_GRAY)
+        self.cell(
+            WIDTH,
+            8,
+            "Returns WAS on continuous-at-zero designs; WAS_d_lower otherwise.",
+            align="C",
+        )
+
         self.add_footer()
 
     def slide_05_insight(self):
@@ -1041,7 +1053,7 @@ class HADCarouselPDF(FPDF):
             ),
             (
                 "Monte Carlo Oracle Consistency",
-                "Recovers the known-tau DGP; coverage at nominal level.",
+                "Recovers the known-tau DGP; coverage near nominal level.",
             ),
         ]
 
