@@ -361,13 +361,13 @@ class TestYatchewParity:
     the yatchew flag on placebo tests "the null being tested is that
     groups' F-1 to F-1-ℓ outcome evolution is mean independent of
     their F-1+ℓ treatment". R's `YatchewTest::yatchew_test(order=0)`
-    fits Y ~ 1 (intercept only) instead of Y ~ D, producing a
-    fundamentally different residual. Our `yatchew_hr_test` always
-    fits Y ~ D (the linearity null). For parity we restrict to the
-    EFFECT rows (post-treatment, where both R and Python use the
-    Y ~ D linearity null). Placebo Yatchew parity requires a separate
-    Python helper exposing the mean-independence null and is
-    deferred."""
+    fits Y ~ 1 (intercept only) instead of Y ~ D. Effect rows
+    (post-treatment) use R's `order=1` (linearity null) which matches
+    our default `yatchew_hr_test(null="linearity")`. Placebo rows are
+    routed through `yatchew_hr_test(null="mean_independence")` (added
+    post-PR #392), which mirrors R's `order=0`. Parity holds at the
+    same `atol=1e-10` after the documented N/(N-1) convention shift
+    on both modes."""
 
     @pytest.mark.parametrize(
         "dgp_name,combo_name,effects,placebo,trends_lin",
@@ -435,15 +435,14 @@ class TestYatchewParity:
             e = _r_id_to_event_time(int(r_id), trends_lin)
             if e not in dy_dict:
                 continue
-            # Skip placebo rows: R uses `order=0` (Y ~ 1, intercept-only
-            # baseline, mean-independence null) on placebos; our
-            # `yatchew_hr_test` always fits Y ~ D (linearity null).
-            # Different test, not a parity opportunity.
-            if int(r_id) < 0:
-                continue
+            # Effect rows (R ID > 0): linearity null (Y ~ 1 + D), R's
+            # YatchewTest::yatchew_test(order=1).
+            # Placebo rows (R ID < 0): mean-independence null (Y ~ 1),
+            # R's YatchewTest::yatchew_test(order=0). Both modes share
+            # the same N/(N-1) convention shift downstream.
+            null_mode = "mean_independence" if int(r_id) < 0 else "linearity"
             dy_e = dy_dict[e]
-            # Yatchew test on (d, dy_e) with no weights.
-            r = yatchew_hr_test(d_arr, dy_e)
+            r = yatchew_hr_test(d_arr, dy_e, null=null_mode)
             # Apply documented convention shift: R's T = our T × G/(G-1)
             # (sample-variance vs population-variance denominators).
             G_horizon = int(r_yatchew_n[r_idx])
@@ -455,7 +454,8 @@ class TestYatchewParity:
                 rtol=0,
                 err_msg=(
                     f"{dgp_name}/{combo_name}/Yatchew row {r_idx} "
-                    f"(R ID={r_id}, our e={e}, G={G_horizon}): T_hr mismatch "
+                    f"(R ID={r_id}, our e={e}, G={G_horizon}, "
+                    f"null={null_mode!r}): T_hr mismatch "
                     f"after N/(N-1) convention shift"
                 ),
             )

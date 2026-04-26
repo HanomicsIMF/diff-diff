@@ -443,6 +443,19 @@ class TestYatchewHRTest:
         r = yatchew_hr_test(d, dy, alpha=0.05)
         assert r.reject is False
 
+    def test_default_null_is_linearity_with_correct_label(self):
+        """Default `null=` (omitted) tags result as ``null_form='linearity'``
+        and is bit-exact with explicit `null='linearity'`."""
+        d, dy = _linear_dgp(G=50, beta=2.0, sigma=0.3, seed=42)
+        r_default = yatchew_hr_test(d, dy, alpha=0.05)
+        r_explicit = yatchew_hr_test(d, dy, alpha=0.05, null="linearity")
+        assert r_default.null_form == "linearity"
+        assert r_explicit.null_form == "linearity"
+        np.testing.assert_array_equal(r_default.t_stat_hr, r_explicit.t_stat_hr)
+        np.testing.assert_array_equal(r_default.sigma2_lin, r_explicit.sigma2_lin)
+        np.testing.assert_array_equal(r_default.sigma2_diff, r_explicit.sigma2_diff)
+        np.testing.assert_array_equal(r_default.sigma2_W, r_explicit.sigma2_W)
+
     def test_rejects_quadratic_dgp(self):
         """Commit criterion 9 (single-realization): quadratic -> reject."""
         d, dy = _quadratic_dgp(G=200, beta=2.0, gamma=5.0, sigma=0.3, seed=42)
@@ -829,6 +842,16 @@ class TestJSONSerialization:
         r = yatchew_hr_test(d, dy)
         json.dumps(r.to_dict())  # must not raise
 
+    def test_yatchew_to_dict_carries_null_form(self):
+        """``to_dict()`` surfaces ``null_form`` for both modes."""
+        d, dy = _linear_dgp(G=50)
+        r_lin = yatchew_hr_test(d, dy)  # default = "linearity"
+        r_mi = yatchew_hr_test(d, dy, null="mean_independence")
+        d_lin = json.loads(json.dumps(r_lin.to_dict()))
+        d_mi = json.loads(json.dumps(r_mi.to_dict()))
+        assert d_lin["null_form"] == "linearity"
+        assert d_mi["null_form"] == "mean_independence"
+
     def test_report_to_dict_is_json_safe(self):
         """Commit criterion 16: json.dumps(report.to_dict()) succeeds."""
         d, dy = _linear_dgp(G=50)
@@ -1179,6 +1202,26 @@ class TestSummary:
         s = r.summary()
         assert len(s) > 0
         assert "Yatchew" in s
+
+    def test_yatchew_summary_switches_title_on_null_form(self):
+        """``summary()`` renders the linearity / mean-independence title
+        per ``null_form``."""
+        d, dy = _linear_dgp(G=50)
+        s_lin = yatchew_hr_test(d, dy).summary()
+        s_mi = yatchew_hr_test(d, dy, null="mean_independence").summary()
+        assert "linearity test" in s_lin
+        assert "mean-independence test" in s_mi
+        # Negative controls — each title is mode-specific.
+        assert "mean-independence test" not in s_lin
+        assert "linearity test" not in s_mi
+
+    def test_yatchew_repr_includes_null_form(self):
+        """``repr()`` carries ``null_form=`` for both modes."""
+        d, dy = _linear_dgp(G=50)
+        r_lin = yatchew_hr_test(d, dy)
+        r_mi = yatchew_hr_test(d, dy, null="mean_independence")
+        assert "null_form='linearity'" in repr(r_lin)
+        assert "null_form='mean_independence'" in repr(r_mi)
 
     def test_report_summary_bundles_all(self):
         d, dy = _linear_dgp(G=50)
@@ -3138,6 +3181,18 @@ class TestYatchewHRTestSurvey:
         # captured); just check finiteness.
         assert np.isfinite(r_unweighted.t_stat_hr)
 
+    def test_default_null_under_weights_is_linearity_with_correct_label(self):
+        """Under weights, default `null=` (omitted) tags result as
+        ``null_form='linearity'`` and is bit-exact with explicit linearity."""
+        d, dy = self._setup()
+        w = np.random.default_rng(7).uniform(0.5, 2.0, size=30)
+        r_default = yatchew_hr_test(d, dy, weights=w)
+        r_explicit = yatchew_hr_test(d, dy, weights=w, null="linearity")
+        assert r_default.null_form == "linearity"
+        assert r_explicit.null_form == "linearity"
+        np.testing.assert_array_equal(r_default.t_stat_hr, r_explicit.t_stat_hr)
+        np.testing.assert_array_equal(r_default.sigma2_lin, r_explicit.sigma2_lin)
+
     def test_weighted_reduces_to_unweighted_at_uniform_weights(self):
         """Reviewer CRITICAL #2 lock: at w=ones(G), weighted variance
         components reduce to the unweighted formulas EXACTLY (atol=1e-14)."""
@@ -3212,6 +3267,282 @@ class TestYatchewHRTestSurvey:
         )
         with pytest.raises(NotImplementedError, match="replicate-weight"):
             yatchew_hr_test(d, dy, survey=resolved_with_rep)
+
+
+class TestYatchewHRTestMeanIndependence:
+    """``null="mean_independence"`` mode mirroring R
+    ``YatchewTest::yatchew_test(order=0)``.
+
+    Closes the placebo Yatchew R-parity gap from PR #392 by exposing
+    the intercept-only OLS (``Y ~ 1``) residual path. Default
+    ``null="linearity"`` retains bit-exact backcompat across all existing
+    test classes.
+    """
+
+    def _setup(self, G=30, seed=42):
+        rng = np.random.default_rng(seed)
+        d = rng.uniform(0.0, 1.0, size=G)
+        dy = 2.0 * d + rng.normal(0.0, 0.3, size=G)
+        return d, dy
+
+    def test_happy_path_returns_finite_with_correct_null_form(self):
+        d, dy = self._setup()
+        r = yatchew_hr_test(d, dy, null="mean_independence")
+        assert np.isfinite(r.t_stat_hr)
+        assert 0.0 <= r.p_value <= 1.0
+        assert r.null_form == "mean_independence"
+
+    def test_naive_python_baseline_atol_1e_12(self):
+        """Hand-compute residuals = dy - dy.mean(), sigma2_lin = (1/G) sum(eps^2),
+        sort by d, adjacent diffs, HR T-stat. Lock at atol=1e-12."""
+        # G = 8 deterministic input.
+        d = np.array([0.10, 0.20, 0.30, 0.40, 0.55, 0.70, 0.85, 0.95])
+        dy = np.array([1.2, 2.1, 1.8, 3.4, 2.9, 4.1, 3.7, 5.0])
+        G = d.shape[0]
+
+        eps = dy - dy.mean()
+        idx = np.argsort(d, kind="stable")
+        dy_s = dy[idx]
+        eps_s = eps[idx]
+        diff_dy = np.diff(dy_s)
+        sigma2_lin_expected = float(np.mean(eps * eps))
+        sigma2_diff_expected = float(np.sum(diff_dy * diff_dy) / (2.0 * G))
+        sigma4_W_expected = float(np.mean(eps_s[1:] ** 2 * eps_s[:-1] ** 2))
+        sigma2_W_expected = float(np.sqrt(sigma4_W_expected))
+        t_expected = float(
+            np.sqrt(G) * (sigma2_lin_expected - sigma2_diff_expected) / sigma2_W_expected
+        )
+
+        r = yatchew_hr_test(d, dy, null="mean_independence")
+        np.testing.assert_allclose(r.sigma2_lin, sigma2_lin_expected, atol=1e-12)
+        np.testing.assert_allclose(r.sigma2_diff, sigma2_diff_expected, atol=1e-12)
+        np.testing.assert_allclose(r.sigma2_W, sigma2_W_expected, atol=1e-12)
+        np.testing.assert_allclose(r.t_stat_hr, t_expected, atol=1e-12)
+
+    def test_sigma2_lin_equals_population_variance_exactly(self):
+        """Under mean-independence, sigma2_lin = (1/G) sum((dy - mean(dy))^2)
+        = np.var(dy, ddof=0). Locks the (1/G) normalizer convention."""
+        d, dy = self._setup()
+        G = d.shape[0]
+        r = yatchew_hr_test(d, dy, null="mean_independence")
+        expected = float(np.sum((dy - dy.mean()) ** 2) / G)
+        np.testing.assert_allclose(r.sigma2_lin, expected, atol=1e-14, rtol=1e-14)
+        # Equivalent np.var(ddof=0) form.
+        np.testing.assert_allclose(r.sigma2_lin, float(np.var(dy, ddof=0)), atol=1e-14)
+
+    def test_invalid_null_value_raises(self):
+        d, dy = self._setup()
+        with pytest.raises(ValueError, match="null must be one of"):
+            yatchew_hr_test(d, dy, null="bogus")  # type: ignore[arg-type]
+
+    def test_default_null_matches_explicit_linearity_bit_exact(self):
+        """Omitting `null=` must be bit-identical to `null='linearity'`."""
+        d, dy = self._setup()
+        r_default = yatchew_hr_test(d, dy, alpha=0.05)
+        r_explicit = yatchew_hr_test(d, dy, alpha=0.05, null="linearity")
+        np.testing.assert_array_equal(r_default.sigma2_lin, r_explicit.sigma2_lin)
+        np.testing.assert_array_equal(r_default.sigma2_diff, r_explicit.sigma2_diff)
+        np.testing.assert_array_equal(r_default.sigma2_W, r_explicit.sigma2_W)
+        np.testing.assert_array_equal(r_default.t_stat_hr, r_explicit.t_stat_hr)
+        assert r_default.null_form == "linearity"
+        assert r_explicit.null_form == "linearity"
+
+    def test_tie_and_constant_d_rejection_is_mode_agnostic(self):
+        """Front-door tie / constant-d guard rejects under BOTH nulls
+        (the sort-by-d differencing step is null-agnostic)."""
+        # Constant d.
+        d_const = np.full(20, 0.5)
+        dy = np.linspace(0.0, 1.0, 20)
+        with warnings.catch_warnings(record=True) as caught_lin:
+            warnings.simplefilter("always")
+            r_lin = yatchew_hr_test(d_const, dy, null="linearity")
+            msgs_lin = [str(w.message) for w in caught_lin]
+        with warnings.catch_warnings(record=True) as caught_mi:
+            warnings.simplefilter("always")
+            r_mi = yatchew_hr_test(d_const, dy, null="mean_independence")
+            msgs_mi = [str(w.message) for w in caught_mi]
+        assert any("duplicate" in m for m in msgs_lin)
+        assert any("duplicate" in m for m in msgs_mi)
+        assert np.isnan(r_lin.t_stat_hr) and np.isnan(r_mi.t_stat_hr)
+        # Both record null_form correctly even on the NaN return path.
+        assert r_lin.null_form == "linearity"
+        assert r_mi.null_form == "mean_independence"
+
+        # Ties (some duplicates).
+        d_ties = np.array([0.1, 0.2, 0.2, 0.5, 0.8, 0.9])
+        dy_ties = np.array([1.0, 2.0, 2.5, 3.0, 4.0, 5.0])
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            r = yatchew_hr_test(d_ties, dy_ties, null="mean_independence")
+        assert np.isnan(r.t_stat_hr)
+        assert r.null_form == "mean_independence"
+
+    def test_nan_dy_input_raises(self):
+        """NaN in dy raises (mode-agnostic; same as linearity path)."""
+        d = np.linspace(0.0, 1.0, 20)
+        dy = np.linspace(0.0, 2.0, 20)
+        dy[3] = np.nan
+        with pytest.raises(ValueError, match="contains NaN"):
+            yatchew_hr_test(d, dy, null="mean_independence")
+
+    # ─── Weighted ────────────────────────────────────────────────────────────
+
+    def test_weighted_reduces_to_unweighted_at_uniform_weights(self):
+        """At w=ones(G), weighted mean-independence reduces bit-exactly to
+        unweighted mean-independence (atol=1e-14)."""
+        d, dy = self._setup()
+        r_unw = yatchew_hr_test(d, dy, null="mean_independence")
+        r_w = yatchew_hr_test(d, dy, null="mean_independence", weights=np.ones(d.shape[0]))
+        np.testing.assert_allclose(r_unw.sigma2_lin, r_w.sigma2_lin, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(r_unw.sigma2_diff, r_w.sigma2_diff, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(r_unw.sigma2_W, r_w.sigma2_W, atol=1e-14, rtol=1e-14)
+        np.testing.assert_allclose(r_unw.t_stat_hr, r_w.t_stat_hr, atol=1e-14, rtol=1e-14)
+        assert r_w.null_form == "mean_independence"
+
+    def test_weighted_non_uniform_baseline_atol_1e_12(self):
+        """Hand-compute weighted mean-independence on G=8 deterministic input
+        with non-uniform weights. Lock at atol=1e-12."""
+        d = np.array([0.10, 0.20, 0.30, 0.40, 0.55, 0.70, 0.85, 0.95])
+        dy = np.array([1.2, 2.1, 1.8, 3.4, 2.9, 4.1, 3.7, 5.0])
+        w = np.array([1.0, 1.5, 0.8, 2.0, 1.2, 0.7, 1.3, 1.1])
+        # Internal pweight normalization: w_eff = w * (G / sum(w)).
+        G = d.shape[0]
+        w_eff = w * (G / w.sum())
+        sum_w_eff = float(np.sum(w_eff))
+
+        a_hat = float(np.sum(w_eff * dy) / sum_w_eff)
+        eps = dy - a_hat
+        sigma2_lin_expected = float(np.sum(w_eff * eps * eps) / sum_w_eff)
+
+        idx = np.argsort(d, kind="stable")
+        dy_s = dy[idx]
+        eps_s = eps[idx]
+        w_s = w_eff[idx]
+        w_avg = 0.5 * (w_s[1:] + w_s[:-1])
+        diff_dy = np.diff(dy_s)
+        sigma2_diff_expected = float(np.sum(w_avg * diff_dy * diff_dy) / (2.0 * sum_w_eff))
+        sigma4_W_expected = float(np.sum(w_avg * eps_s[1:] ** 2 * eps_s[:-1] ** 2) / np.sum(w_avg))
+        sigma2_W_expected = float(np.sqrt(sigma4_W_expected))
+        t_expected = float(
+            np.sqrt(sum_w_eff) * (sigma2_lin_expected - sigma2_diff_expected) / sigma2_W_expected
+        )
+
+        r = yatchew_hr_test(d, dy, null="mean_independence", weights=w)
+        np.testing.assert_allclose(r.sigma2_lin, sigma2_lin_expected, atol=1e-12)
+        np.testing.assert_allclose(r.sigma2_diff, sigma2_diff_expected, atol=1e-12)
+        np.testing.assert_allclose(r.sigma2_W, sigma2_W_expected, atol=1e-12)
+        np.testing.assert_allclose(r.t_stat_hr, t_expected, atol=1e-12)
+
+    def test_default_null_under_weights_matches_explicit_linearity(self):
+        d, dy = self._setup()
+        w = np.random.default_rng(7).uniform(0.5, 2.0, size=d.shape[0])
+        r_default = yatchew_hr_test(d, dy, weights=w)
+        r_explicit = yatchew_hr_test(d, dy, weights=w, null="linearity")
+        np.testing.assert_array_equal(r_default.t_stat_hr, r_explicit.t_stat_hr)
+        np.testing.assert_array_equal(r_default.sigma2_lin, r_explicit.sigma2_lin)
+        assert r_default.null_form == "linearity"
+
+    def test_survey_design_with_mean_independence_composes(self):
+        """`survey_design=` and `null='mean_independence'` are orthogonal;
+        passing both does NOT raise NotImplementedError."""
+        from diff_diff.survey import make_pweight_design
+
+        d, dy = self._setup()
+        w = np.random.default_rng(7).uniform(0.5, 2.0, size=d.shape[0])
+        r = yatchew_hr_test(
+            d,
+            dy,
+            null="mean_independence",
+            survey_design=make_pweight_design(w),
+        )
+        assert np.isfinite(r.t_stat_hr)
+        assert r.null_form == "mean_independence"
+
+    def test_weighted_linearity_baseline_atol_1e_12(self):
+        """4-arm coverage gap fill: hand-compute weighted-linearity components
+        on G=8 deterministic input. Locks the (linearity, weighted) arm
+        explicitly (the other 3 arms locked by tests above + existing suite)."""
+        d = np.array([0.10, 0.20, 0.30, 0.40, 0.55, 0.70, 0.85, 0.95])
+        dy = np.array([1.2, 2.1, 1.8, 3.4, 2.9, 4.1, 3.7, 5.0])
+        w = np.array([1.0, 1.5, 0.8, 2.0, 1.2, 0.7, 1.3, 1.1])
+        G = d.shape[0]
+        w_eff = w * (G / w.sum())
+        sum_w_eff = float(np.sum(w_eff))
+
+        # Weighted OLS: dy = a + b*d + eps.
+        d_wm = float(np.sum(w_eff * d) / sum_w_eff)
+        dy_wm = float(np.sum(w_eff * dy) / sum_w_eff)
+        d_dev = d - d_wm
+        var_d_w = float(np.sum(w_eff * d_dev * d_dev))
+        b_hat = float(np.sum(w_eff * d_dev * (dy - dy_wm)) / var_d_w)
+        a_hat = float(dy_wm - b_hat * d_wm)
+        eps = dy - a_hat - b_hat * d
+        sigma2_lin_expected = float(np.sum(w_eff * eps * eps) / sum_w_eff)
+
+        idx = np.argsort(d, kind="stable")
+        dy_s = dy[idx]
+        eps_s = eps[idx]
+        w_s = w_eff[idx]
+        w_avg = 0.5 * (w_s[1:] + w_s[:-1])
+        diff_dy = np.diff(dy_s)
+        sigma2_diff_expected = float(np.sum(w_avg * diff_dy * diff_dy) / (2.0 * sum_w_eff))
+        sigma4_W_expected = float(np.sum(w_avg * eps_s[1:] ** 2 * eps_s[:-1] ** 2) / np.sum(w_avg))
+        sigma2_W_expected = float(np.sqrt(sigma4_W_expected))
+        t_expected = float(
+            np.sqrt(sum_w_eff) * (sigma2_lin_expected - sigma2_diff_expected) / sigma2_W_expected
+        )
+
+        r = yatchew_hr_test(d, dy, weights=w, null="linearity")
+        np.testing.assert_allclose(r.sigma2_lin, sigma2_lin_expected, atol=1e-12)
+        np.testing.assert_allclose(r.sigma2_diff, sigma2_diff_expected, atol=1e-12)
+        np.testing.assert_allclose(r.sigma2_W, sigma2_W_expected, atol=1e-12)
+        np.testing.assert_allclose(r.t_stat_hr, t_expected, atol=1e-12)
+        assert r.null_form == "linearity"
+
+    def test_zero_weight_rejected_under_mean_independence(self):
+        """Strictly-positive weights still required (mode-agnostic)."""
+        d, dy = self._setup()
+        w = np.ones(d.shape[0])
+        w[5] = 0.0
+        with pytest.raises(ValueError, match="strictly positive"):
+            yatchew_hr_test(d, dy, null="mean_independence", weights=w)
+
+    def test_replicate_weights_rejected_under_mean_independence(self):
+        from diff_diff.survey import ResolvedSurveyDesign
+
+        d, dy = self._setup()
+        w = np.ones(d.shape[0])
+        resolved_with_rep = ResolvedSurveyDesign(
+            weights=w,
+            weight_type="pweight",
+            strata=None,
+            psu=None,
+            fpc=None,
+            n_strata=0,
+            n_psu=d.shape[0],
+            lonely_psu="remove",
+            replicate_weights=np.tile(w[:, None], (1, 5)),
+            replicate_method="BRR",
+            n_replicates=5,
+        )
+        with pytest.raises(NotImplementedError, match="replicate-weight"):
+            yatchew_hr_test(d, dy, null="mean_independence", survey=resolved_with_rep)
+
+    # ─── Edge case ───────────────────────────────────────────────────────────
+
+    def test_G_below_min_returns_nan_under_both_nulls(self):
+        """G=2 returns NaN under both nulls (HR variance estimator
+        needs adjacent-pair products, undefined for G<3)."""
+        d = np.array([0.1, 0.5])
+        dy = np.array([1.0, 2.0])
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            r_lin = yatchew_hr_test(d, dy, null="linearity")
+            r_mi = yatchew_hr_test(d, dy, null="mean_independence")
+        assert np.isnan(r_lin.t_stat_hr)
+        assert np.isnan(r_mi.t_stat_hr)
+        assert r_lin.null_form == "linearity"
+        assert r_mi.null_form == "mean_independence"
 
 
 class TestJointStuteSurvey:
