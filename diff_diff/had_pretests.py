@@ -3428,13 +3428,19 @@ def joint_pretrends_test(
         outcome evolution as ``(t - base) × slope``. Mirrors R
         ``DIDHAD::did_had(..., trends_lin=TRUE)`` on its joint Stute
         pre-trends surface (paper Section 5.2 Pierce-Schott
-        application). Requires ``base_period - 1`` to exist in the
-        panel; raises ``ValueError`` otherwise. The "consumed" placebo
-        at ``base_period - 1`` is dropped from ``pre_periods``
-        explicitly (its detrended residual is mechanically zero by
-        construction); a ``UserWarning`` fires when the filter
-        triggers. If ``pre_periods`` becomes empty after the drop,
-        raises ``ValueError`` (no testable placebo horizons remain).
+        application). **Requires** ``base_period`` to equal the last
+        validated pre-period (``t_pre_list[-1]``, i.e. the canonical
+        ``F-1`` anchor). Direct callers passing a non-terminal base
+        get a ``ValueError`` — Eq 17 / R both anchor at ``F-1`` and
+        any other anchor would compute a different slope and
+        detrending. The previous validated pre-period
+        (``t_pre_list[-2]``, ``F-2``) must also be present so the
+        slope is identified. The "consumed" placebo at ``F-2`` is
+        dropped from ``pre_periods`` explicitly (its detrended
+        residual is mechanically zero by construction); a
+        ``UserWarning`` fires when the filter triggers. If
+        ``pre_periods`` becomes empty after the drop, raises
+        ``ValueError`` (no testable placebo horizons remain).
         Mutually exclusive with survey weighting (``survey_design`` /
         ``survey`` / ``weights``); raises ``NotImplementedError`` if
         combined. Default ``False`` preserves bit-exact backcompat.
@@ -3872,10 +3878,14 @@ def joint_homogeneity_test(
         slope estimator as :func:`joint_pretrends_test`. Mirrors R
         ``DIDHAD::did_had(..., trends_lin=TRUE)`` on its joint
         homogeneity surface (paper Section 4.3, Pierce-Schott p=0.40
-        anchor). Requires ``base_period - 1`` to exist in the panel;
-        raises ``ValueError`` otherwise. Mutually exclusive with
-        survey weighting; raises ``NotImplementedError`` if combined.
-        Default ``False`` preserves bit-exact backcompat.
+        anchor). **Requires** ``base_period`` to equal the last
+        validated pre-period (``t_pre_list[-1]``, the canonical
+        ``F-1`` anchor) AND ``F-2`` to be present in the panel so
+        the slope is identified. Direct callers passing a non-
+        terminal base get a ``ValueError`` — Eq 17 / R both anchor
+        at ``F-1``. Mutually exclusive with survey weighting; raises
+        ``NotImplementedError`` if combined. Default ``False``
+        preserves bit-exact backcompat.
 
     Returns
     -------
