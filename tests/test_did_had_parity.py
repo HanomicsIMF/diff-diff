@@ -428,11 +428,23 @@ class TestFixtureMetadata:
     """Sanity checks on the fixture itself."""
 
     def test_metadata_versions_match(self, fixture):
-        """Ensure the JSON metadata lists the expected DIDHAD version pin."""
+        """Ensure the JSON metadata lists the EXACT pinned upstream
+        versions. PR #392 R4 P3: exact pin (not >=) so future
+        regeneration does not silently re-anchor the goldens to a
+        newer CRAN release while changelog / registry still cite the
+        old version. Bump these pins (here AND in
+        ``benchmarks/R/generate_did_had_golden.R``) when intentionally
+        re-anchoring."""
         meta = fixture["metadata"]
-        assert meta["didhad_version"] >= "2.0.0", (
+        assert meta["didhad_version"] == "2.0.0", (
             f"Fixture was generated against DIDHAD={meta['didhad_version']!r}; "
-            f"the parity test expects >= 2.0.0. Regenerate the fixture."
+            f"the parity test pins exactly 2.0.0. Regenerate after bumping "
+            f"the pin in both the generator and this test."
+        )
+        assert meta["yatchewtest_version"] == "1.1.1", (
+            f"Fixture was generated against YatchewTest="
+            f"{meta['yatchewtest_version']!r}; the parity test pins exactly "
+            f"1.1.1. Regenerate after bumping the pin."
         )
 
     def test_metadata_n_dgps(self, fixture):

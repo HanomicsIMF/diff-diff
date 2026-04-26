@@ -4812,6 +4812,108 @@ class TestJointPretestsTrendsLin:
         assert np.isfinite(r.cvm_stat_joint)
         assert np.isfinite(r.p_value)
 
+    def test_pretrends_trends_lin_unused_categorical_invariant(self):
+        """Same observed panel with vs without unused intermediate
+        categorical levels must produce IDENTICAL joint statistics on
+        the pretrends path. Reviewer-requested invariant for PR #392
+        R4 P0 — detrending delta must use observed-period rank, not
+        full-categorical rank."""
+        df_int = self._panel(rng_seed=50)
+        time_map = {1: "t1", 2: "t2", 3: "t3", 4: "t4", 5: "t5"}
+        df_a = df_int.copy()
+        df_a["time"] = pd.Categorical(
+            df_a["time"].map(time_map),
+            categories=["t1", "t2", "t3", "t4", "t5"],
+            ordered=True,
+        )
+        df_b = df_int.copy()
+        df_b["time"] = pd.Categorical(
+            df_b["time"].map(time_map),
+            categories=["t1", "t_unused1", "t2", "t3", "t_unused2", "t4", "t5"],
+            ordered=True,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_a = joint_pretrends_test(
+                df_a,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=["t1"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+            r_b = joint_pretrends_test(
+                df_b,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=["t1"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        assert r_a.cvm_stat_joint == r_b.cvm_stat_joint, (
+            f"unused-categorical invariance broken on pretrends: "
+            f"a={r_a.cvm_stat_joint}, b={r_b.cvm_stat_joint}"
+        )
+        assert r_a.p_value == r_b.p_value
+
+    def test_homogeneity_trends_lin_unused_categorical_invariant(self):
+        """Twin invariant for joint_homogeneity_test."""
+        df_int = self._panel(rng_seed=51)
+        time_map = {1: "t1", 2: "t2", 3: "t3", 4: "t4", 5: "t5"}
+        df_a = df_int.copy()
+        df_a["time"] = pd.Categorical(
+            df_a["time"].map(time_map),
+            categories=["t1", "t2", "t3", "t4", "t5"],
+            ordered=True,
+        )
+        df_b = df_int.copy()
+        df_b["time"] = pd.Categorical(
+            df_b["time"].map(time_map),
+            # Insert unused level between base (t3) and post (t4) — would
+            # change the post-period delta under the buggy full-cat rank.
+            categories=["t1", "t2", "t3", "t_unused", "t4", "t5"],
+            ordered=True,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r_a = joint_homogeneity_test(
+                df_a,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=["t4", "t5"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+            r_b = joint_homogeneity_test(
+                df_b,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=["t4", "t5"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        assert r_a.cvm_stat_joint == r_b.cvm_stat_joint, (
+            f"unused-categorical invariance broken on homogeneity: "
+            f"a={r_a.cvm_stat_joint}, b={r_b.cvm_stat_joint}"
+        )
+        assert r_a.p_value == r_b.p_value
+
     def test_workflow_trends_lin_with_overall_aggregate_raises(self):
         """trends_lin=True only valid on event_study aggregate."""
         df = self._panel(rng_seed=34)

@@ -3693,11 +3693,28 @@ def joint_pretrends_test(
         slope = wide_y[base_period].to_numpy(dtype=np.float64) - wide_y[
             base_minus_1_period
         ].to_numpy(dtype=np.float64)
+        # PR #392 R4 P0: build the detrending rank from OBSERVED
+        # periods (on data_filtered), not from the full categorical
+        # dtype. Otherwise unused intermediate categorical levels
+        # silently change the (t - base) multiplier and corrupt the
+        # joint statistic. Mirrors HAD.fit's
+        # `_aggregate_multi_period_first_differences` convention which
+        # uses `sorted(t_pre_list + t_post_list, ...)` for the
+        # event-time rank.
+        observed_rank = {
+            p: i
+            for i, p in enumerate(
+                sorted(
+                    set(data_filtered[time_col].unique()),
+                    key=lambda p: period_rank[p],
+                )
+            )
+        }
+        base_rank_observed = observed_rank[base_period]
         # Apply detrending in place to remaining dy_by_horizon entries.
         for t in pre_periods_effective:
             label = str(t)
-            t_rank = period_rank[t]
-            delta = t_rank - base_rank  # < 0 for pre-periods
+            delta = observed_rank[t] - base_rank_observed  # < 0 for pre-periods
             dy_by_horizon[label] = dy_by_horizon[label] - delta * slope
 
     # Phase 4.5 C: aggregate per-row weights/survey to per-unit (G,)
@@ -4071,10 +4088,22 @@ def joint_homogeneity_test(
         slope_h = wide_y_h[base_period].to_numpy(dtype=np.float64) - wide_y_h[
             base_minus_1_period_h
         ].to_numpy(dtype=np.float64)
+        # PR #392 R4 P0: build the detrending rank from OBSERVED
+        # periods on data_filtered (matching HAD.fit). Twin of
+        # joint_pretrends_test fix.
+        observed_rank_h = {
+            p: i
+            for i, p in enumerate(
+                sorted(
+                    set(data_filtered[time_col].unique()),
+                    key=lambda p: period_rank[p],
+                )
+            )
+        }
+        base_rank_observed_h = observed_rank_h[base_period]
         for t in post_periods:
             label = str(t)
-            t_rank = period_rank[t]
-            delta = t_rank - base_rank  # > 0 for post-periods
+            delta = observed_rank_h[t] - base_rank_observed_h  # > 0 for post-periods
             dy_by_horizon[label] = dy_by_horizon[label] - delta * slope_h
 
     # Phase 4.5 C: aggregate weights/survey to per-unit; thread through.
