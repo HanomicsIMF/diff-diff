@@ -78,7 +78,7 @@ jobs:
             core.setOutput("base_ref", pr.data.base.ref);
             core.setOutput("head_ref", pr.data.head.ref);
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: refs/pull/${{ steps.pr.outputs.number }}/merge
 
