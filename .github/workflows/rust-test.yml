@@ -7,6 +7,9 @@ on:
       - 'rust/**'
       - 'diff_diff/**'
       - 'tests/**'
+      # tests/test_doc_snippets.py is owned by docs-tests.yml; exclude it
+      # so a harness-only edit does not fan out into the Rust matrix.
+      - '!tests/test_doc_snippets.py'
       - 'pyproject.toml'
       - '.github/workflows/rust-test.yml'
   pull_request:
@@ -16,6 +19,7 @@ on:
       - 'rust/**'
       - 'diff_diff/**'
       - 'tests/**'
+      - '!tests/test_doc_snippets.py'
       - 'pyproject.toml'
       - '.github/workflows/rust-test.yml'
 
