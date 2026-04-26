@@ -13,6 +13,9 @@ required_packages <- c(
   "triplediff",    # Ortiz-Villavicencio & Sant'Anna (2025) triple difference
   "survey",        # Lumley (2004) complex survey analysis
   "estimatr",      # Blair et al. (2019) weighted robust / IV SE (HAD mass-point parity)
+  "DIDHAD",        # de Chaisemartin et al. (2025) HAD estimator (HAD Phase 4 R-parity)
+  "YatchewTest",   # Yatchew (1997) linearity test (HAD yatchew R-parity)
+  "nprobust",      # Calonico-Cattaneo-Farrell local-linear (DIDHAD dependency)
 
   # Utilities
   "jsonlite",      # JSON output for Python interop

@@ -49,11 +49,16 @@ Composite workflow:
   (Step 4 in the paper's workflow is the decision itself - "use TWFE
   if none of the tests rejects" - not a separate test.)
 
-Eq. 18 linear-trend detrending (paper Section 5.2 Pierce-Schott
-application, published p=0.51) is the one remaining deferred item;
-tracked in ``TODO.md`` and slated for Phase 4 alongside the replication
-harness. See ``docs/methodology/REGISTRY.md`` for the full algorithm
-narrative, invariants, and deviation notes.
+Eq. 17 / Eq. 18 linear-trend detrending (paper Section 5.2 Pierce-Schott
+application) shipped in PR #389 (Phase 4 R-parity) as the
+``trends_lin: bool = False`` keyword-only kwarg on
+:func:`joint_pretrends_test`, :func:`joint_homogeneity_test`, AND
+:meth:`HeterogeneousAdoptionDiD.fit` (event-study path). Mirrors R
+``DIDHAD::did_had(..., trends_lin=TRUE)``. Survey-weighted variant is
+not yet derived from the paper and raises ``NotImplementedError``;
+tracked in ``TODO.md`` if user demand emerges. See
+``docs/methodology/REGISTRY.md`` for the full algorithm narrative,
+invariants, and deviation notes.
 """
 
 from __future__ import annotations
@@ -3363,6 +3368,7 @@ def joint_pretrends_test(
     survey_design: Any = None,
     survey: Any = None,
     weights: Optional[np.ndarray] = None,
+    trends_lin: bool = False,
 ) -> StuteJointResult:
     """Joint Stute pre-trends test (paper Section 4.2 step 2).
 
@@ -3438,6 +3444,21 @@ def joint_pretrends_test(
     # Internal alias rebind: downstream code uses `survey` and `weights`.
     if survey_design is not None and survey is None:
         survey = survey_design
+
+    # ---- trends_lin × survey_design gate (PR #389 / Phase 4 R-parity). ----
+    # Detrending under survey weighting (weighted slope? per-PSU slope?)
+    # is not derived from the paper. Use trends_lin without survey weights,
+    # OR survey weights without trends_lin. Tracked as TODO follow-up.
+    if trends_lin and (survey is not None or weights is not None):
+        raise NotImplementedError(
+            "joint_pretrends_test(trends_lin=True) is not yet supported "
+            "with survey weighting (`survey_design=` / `survey=` / "
+            "`weights=`). The per-group slope estimator's weighted "
+            "variant is not derived from the paper. Use trends_lin=True "
+            "WITHOUT survey weights, or use survey weights WITHOUT "
+            "trends_lin. Tracked in TODO.md as a follow-up if user "
+            "demand emerges."
+        )
 
     if len(pre_periods) == 0:
         raise ValueError(
@@ -3551,6 +3572,58 @@ def joint_pretrends_test(
             f"anchor."
         )
 
+    # ---- Apply trends_lin detrending (paper Eq 17 / Eq 18).
+    # Compute per-group slope from Y[g, base] - Y[g, base-1] (the period
+    # immediately before the anchor). Then for each pre_period horizon
+    # t with rank delta (t_rank - base_rank) < 0, subtract delta * slope
+    # from the corresponding dy_t. Algebraically:
+    #   detrended_dy_t = (Y[g, t] - Y[g, base]) - (t - base) × slope
+    #                  = dy_t - delta × slope
+    # where slope = Y[g, base] - Y[g, base-1].
+    #
+    # Requires base_period - 1 to be present in the panel.
+    if trends_lin:
+        # Find the period immediately before base_period (one rank less).
+        base_minus_1_period: Any = None
+        for p, r in period_rank.items():
+            if r == base_rank - 1:
+                base_minus_1_period = p
+                break
+        if base_minus_1_period is None:
+            raise ValueError(
+                f"joint_pretrends_test(trends_lin=True) requires the "
+                f"period immediately before base_period={base_period!r} "
+                f"to exist in the panel (rank {base_rank - 1}). The "
+                f"per-group linear-trend slope Y[g, base] - Y[g, base-1] "
+                f"is not identified without it. Available periods: "
+                f"{sorted(period_rank.keys(), key=lambda t: period_rank[t])!r}."
+            )
+        # Extract Y[g, base] and Y[g, base-1] in unit_col-sorted order
+        # (matching d_arr / dy_by_horizon ordering produced by
+        # _aggregate_for_joint_test's wide-pivot sort by index).
+        slope_subset = data_filtered[
+            data_filtered[time_col].isin([base_period, base_minus_1_period])
+        ]
+        wide_y = slope_subset.pivot(index=unit_col, columns=time_col, values=outcome_col)
+        wide_y = wide_y.sort_index()
+        if wide_y[base_period].isna().any() or wide_y[base_minus_1_period].isna().any():
+            raise ValueError(
+                f"joint_pretrends_test(trends_lin=True): NaN value(s) "
+                f"in outcome at base_period={base_period!r} or "
+                f"base_period-1={base_minus_1_period!r}. The slope "
+                f"estimator requires complete observations at both "
+                f"periods for every unit."
+            )
+        slope = wide_y[base_period].to_numpy(dtype=np.float64) - wide_y[
+            base_minus_1_period
+        ].to_numpy(dtype=np.float64)
+        # Apply detrending in place to dy_by_horizon entries.
+        for t in pre_periods:
+            label = str(t)
+            t_rank = period_rank[t]
+            delta = t_rank - base_rank  # < 0 for pre-periods
+            dy_by_horizon[label] = dy_by_horizon[label] - delta * slope
+
     # Phase 4.5 C: aggregate per-row weights/survey to per-unit (G,)
     # using the existing HAD helpers (constant-within-unit invariant
     # enforced; replicate-weight rejected on the survey path).
@@ -3653,6 +3726,7 @@ def joint_homogeneity_test(
     survey_design: Any = None,
     survey: Any = None,
     weights: Optional[np.ndarray] = None,
+    trends_lin: bool = False,
 ) -> StuteJointResult:
     """Joint Stute homogeneity-linearity test (paper Section 4.3 joint).
 
@@ -3720,6 +3794,19 @@ def joint_homogeneity_test(
     # Internal alias rebind: downstream code uses `survey` and `weights`.
     if survey_design is not None and survey is None:
         survey = survey_design
+
+    # ---- trends_lin × survey_design gate (PR #389 / Phase 4 R-parity).
+    # Twin of joint_pretrends_test guard. ----
+    if trends_lin and (survey is not None or weights is not None):
+        raise NotImplementedError(
+            "joint_homogeneity_test(trends_lin=True) is not yet "
+            "supported with survey weighting (`survey_design=` / "
+            "`survey=` / `weights=`). The per-group slope estimator's "
+            "weighted variant is not derived from the paper. Use "
+            "trends_lin=True WITHOUT survey weights, or use survey "
+            "weights WITHOUT trends_lin. Tracked in TODO.md as a "
+            "follow-up if user demand emerges."
+        )
 
     if len(post_periods) == 0:
         raise ValueError(
@@ -3833,6 +3920,49 @@ def joint_homogeneity_test(
                 f"in each post-period (reciprocal of the pre-period "
                 f"zero-dose invariant)."
             )
+
+    # ---- Apply trends_lin detrending (paper Eq 17 / page 32 joint-Stute
+    # post-period homogeneity null with industry-specific linear trends).
+    # Twin of joint_pretrends_test detrending: per-group slope from
+    # Y[g, base] - Y[g, base-1], applied to each post-period horizon's
+    # dy_t. The post-period delta = t_rank - base_rank > 0, so the
+    # subtraction extrapolates the linear trend FORWARD into post-periods.
+    if trends_lin:
+        base_minus_1_period_h: Any = None
+        for p, r in period_rank.items():
+            if r == base_rank - 1:
+                base_minus_1_period_h = p
+                break
+        if base_minus_1_period_h is None:
+            raise ValueError(
+                f"joint_homogeneity_test(trends_lin=True) requires the "
+                f"period immediately before base_period={base_period!r} "
+                f"to exist in the panel (rank {base_rank - 1}). The "
+                f"per-group linear-trend slope Y[g, base] - Y[g, base-1] "
+                f"is not identified without it. Available periods: "
+                f"{sorted(period_rank.keys(), key=lambda t: period_rank[t])!r}."
+            )
+        slope_subset_h = data_filtered[
+            data_filtered[time_col].isin([base_period, base_minus_1_period_h])
+        ]
+        wide_y_h = slope_subset_h.pivot(index=unit_col, columns=time_col, values=outcome_col)
+        wide_y_h = wide_y_h.sort_index()
+        if wide_y_h[base_period].isna().any() or wide_y_h[base_minus_1_period_h].isna().any():
+            raise ValueError(
+                f"joint_homogeneity_test(trends_lin=True): NaN value(s) "
+                f"in outcome at base_period={base_period!r} or "
+                f"base_period-1={base_minus_1_period_h!r}. The slope "
+                f"estimator requires complete observations at both "
+                f"periods for every unit."
+            )
+        slope_h = wide_y_h[base_period].to_numpy(dtype=np.float64) - wide_y_h[
+            base_minus_1_period_h
+        ].to_numpy(dtype=np.float64)
+        for t in post_periods:
+            label = str(t)
+            t_rank = period_rank[t]
+            delta = t_rank - base_rank  # > 0 for post-periods
+            dy_by_horizon[label] = dy_by_horizon[label] - delta * slope_h
 
     # Phase 4.5 C: aggregate weights/survey to per-unit; thread through.
     # R2 P1 fix: subset row-level `weights` to data_filtered's rows BEFORE
