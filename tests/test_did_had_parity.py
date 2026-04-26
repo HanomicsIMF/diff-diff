@@ -191,15 +191,22 @@ def _zip_r_python(
                 f"Python event_times = {py_event_times}. Mapping bug?"
             )
         pairs.append((i, py_idx_by_event_time[e], rowname))
-    # Exact-shape assertion: every R-mapped event time must be present
-    # in Python's event_times. Length-equality is too strict (Python
-    # may emit additional horizons R didn't request, e.g. e=0 anchor),
-    # but every R row must find a Python counterpart.
-    missing_in_python = set(expected_event_times) - set(py_event_times)
-    assert not missing_in_python, (
-        f"event_times mismatch: R requested {sorted(expected_event_times)} "
-        f"(mapped from R IDs); Python emitted {sorted(py_event_times)}; "
-        f"missing in Python: {sorted(missing_in_python)}."
+    # PR #392 R6 P3: exact set equality between R-mapped horizons and
+    # Python's event_times (was: subset inclusion). Catches
+    # horizon-selection regressions in BOTH directions:
+    #   - missing_in_python: Python silently dropped a horizon R requested
+    #   - extra_in_python: Python emitted an extra horizon R did not
+    #     request (e.g. effects/placebo cap drift in our event_study path)
+    expected_set = set(expected_event_times)
+    py_set = set(py_event_times)
+    missing_in_python = expected_set - py_set
+    extra_in_python = py_set - expected_set
+    assert not missing_in_python and not extra_in_python, (
+        f"event_times set-equality mismatch: "
+        f"R-mapped {sorted(expected_set)}; Python emitted "
+        f"{sorted(py_event_times)}; missing in Python: "
+        f"{sorted(missing_in_python)}; extra in Python: "
+        f"{sorted(extra_in_python)}."
     )
     return pairs
 
