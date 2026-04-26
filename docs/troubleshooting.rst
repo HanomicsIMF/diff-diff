@@ -570,28 +570,33 @@ fits. See :doc:`api/had` for the full SE-regime contract.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Problem:** ``HeterogeneousAdoptionDiD.fit(..., aggregate="event_study")``
-raises because the panel is not balanced or the staggered-timing structure
-violates the last-treatment-cohort restriction.
+raises on a staggered panel.
 
-**Cause:** The Appendix B.2 event-study extension requires staggered-timing
-panels restricted to the last-treatment cohort (which retains never-treated
-units as comparisons). Unbalanced panels or earlier-treated cohorts are not
-supported in the current release.
+**Cause:** The Appendix B.2 event-study extension requires either a
+common-adoption panel (single first-treat period; ``first_treat_col`` is
+then optional and the period is inferred from the dose invariant) or a
+staggered panel with ``first_treat_col`` provided so the estimator can
+auto-filter to the last-treatment cohort plus never-treated units (with
+a ``UserWarning``). The fit raises only when the panel is staggered
+**and** ``first_treat_col`` is missing.
 
 **Solutions:**
 
 .. code-block:: python
 
-   # Verify panel balance
-   periods_per_unit = data.groupby('unit')['period'].nunique()
-   assert periods_per_unit.nunique() == 1, "Panel is unbalanced"
+   # Primary remedy: pass `first_treat_col` so the estimator auto-filters
+   # to the last-treatment cohort + never-treated and emits a UserWarning.
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose',
+                     first_treat_col='first_treat',
+                     aggregate='event_study')
 
-   # Restrict to the last-treatment cohort manually if needed
+   # Equivalent: subset to the last-treatment cohort + never-treated
+   # before fitting (skips the UserWarning).
    last_cohort = data['first_treat'].max()
    subset = data[(data['first_treat'] == last_cohort) |
                  (data['first_treat'] == 0)]
-
-   est = HeterogeneousAdoptionDiD()
    results = est.fit(subset, outcome_col='y', unit_col='unit',
                      time_col='period', dose_col='dose',
                      aggregate='event_study')
