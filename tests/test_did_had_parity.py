@@ -169,22 +169,38 @@ def _zip_r_python(
     r_result: Dict[str, Any], py_result: Any, trends_lin: bool
 ) -> List[Tuple[int, int, str]]:
     """Build (r_row_idx, py_event_idx, r_rowname) tuples zipping R rows
-    to Python event-time positions for parity assertions."""
+    to Python event-time positions for parity assertions.
+
+    PR #392 R5 P3: also asserts the EXACT mapped event-time set is a
+    subset of Python's ``event_times`` and that the mapping is total
+    over R's reported rows (no R row maps to a missing Python
+    horizon). This catches future horizon-shape regressions where
+    Python silently drops an event-time the R fixture lists."""
     py_event_times = py_result.event_times.tolist()
     py_idx_by_event_time = {int(e): i for i, e in enumerate(py_event_times)}
     pairs = []
     r_event_ids = _as_list(r_result["event_id"])
     r_rownames = _as_list(r_result["rownames"])
+    expected_event_times = []
     for i, (r_id, rowname) in enumerate(zip(r_event_ids, r_rownames)):
         e = _r_id_to_event_time(int(r_id), trends_lin)
+        expected_event_times.append(e)
         if e not in py_idx_by_event_time:
-            # Should not happen for valid fixtures; surface explicit
-            # diagnostic if R reports a row our Python event_times lacks.
             raise AssertionError(
                 f"R row {rowname!r} (ID={r_id}) maps to our e={e}, but "
                 f"Python event_times = {py_event_times}. Mapping bug?"
             )
         pairs.append((i, py_idx_by_event_time[e], rowname))
+    # Exact-shape assertion: every R-mapped event time must be present
+    # in Python's event_times. Length-equality is too strict (Python
+    # may emit additional horizons R didn't request, e.g. e=0 anchor),
+    # but every R row must find a Python counterpart.
+    missing_in_python = set(expected_event_times) - set(py_event_times)
+    assert not missing_in_python, (
+        f"event_times mismatch: R requested {sorted(expected_event_times)} "
+        f"(mapped from R IDs); Python emitted {sorted(py_event_times)}; "
+        f"missing in Python: {sorted(missing_in_python)}."
+    )
     return pairs
 
 
@@ -355,6 +371,20 @@ class TestYatchewParity:
     ):
         r_combo = fixture["fixtures"][dgp_name]["combos"][combo_name]
         r_result = r_combo["result"]
+        # PR #392 R5 P3: assert R's reported (effects + placebo) row
+        # count matches the parametrize spec — catches future fixture
+        # drift where R's effects/placebo args don't actually drive
+        # the row count we expect.
+        n_yatchew_rows = len(_as_list(r_result["yatchew_t"]))
+        # Under trends_lin, R drops one placebo (consumed). Otherwise
+        # rows = effects + placebo (the auto-truncation cap from R is
+        # capped at the panel's max via did_het_adoption_main).
+        expected_rows = effects + placebo - (1 if trends_lin else 0)
+        assert n_yatchew_rows == expected_rows, (
+            f"R fixture row count for {combo_name} = {n_yatchew_rows}, "
+            f"expected effects+placebo{'-1' if trends_lin else ''} = "
+            f"{expected_rows}; fixture/combo spec drift?"
+        )
         if "yatchew_t" not in r_result:
             pytest.fail(
                 f"{combo_name} expected to have yatchew_t in fixture; "
@@ -445,6 +475,15 @@ class TestFixtureMetadata:
             f"Fixture was generated against YatchewTest="
             f"{meta['yatchewtest_version']!r}; the parity test pins exactly "
             f"1.1.1. Regenerate after bumping the pin."
+        )
+        # PR #392 R5 P3: nprobust is on the parity contract path
+        # (DIDHAD's local-linear bandwidth + bias-correction calls go
+        # through it), so pin it exactly too. Bump in lockstep with
+        # the generator's stopifnot guards.
+        assert meta["nprobust_version"] == "0.5.0", (
+            f"Fixture was generated against nprobust="
+            f"{meta['nprobust_version']!r}; the parity test pins exactly "
+            f"0.5.0. Regenerate after bumping the pin."
         )
 
     def test_metadata_n_dgps(self, fixture):

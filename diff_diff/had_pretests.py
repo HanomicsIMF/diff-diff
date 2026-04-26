@@ -433,8 +433,10 @@ class StuteJointResult:
     :func:`joint_pretrends_test` (mean-independence: ``E[Y_t - Y_base | D]
     = mu_t``, design matrix ``[1]``) and :func:`joint_homogeneity_test`
     (linearity: ``E[Y_t - Y_base | D_t] = beta_{0,t} + beta_{fe,t} * D``,
-    design matrix ``[1, D]``). Eq 18 linear-trend detrending (paper
-    Section 5.2 Pierce-Schott application) is a Phase 4 follow-up.
+    design matrix ``[1, D]``). Both wrappers accept a ``trends_lin:
+    bool = False`` keyword-only flag (PR #392): when ``True``, applies
+    paper Eq 17 / Eq 18 linear-trend detrending before the joint CvM
+    using per-group slope ``Y[g, F-1] - Y[g, F-2]``.
 
     Attributes
     ----------
@@ -4322,9 +4324,17 @@ def did_had_pretest_workflow(
     users who need Yatchew robustness under multi-period data should
     call :func:`yatchew_hr_test` on each (base, post) pair manually.
 
-    Eq 18 linear-trend detrending (paper Section 5.2 Pierce-Schott
-    application) is a Phase 4 follow-up; the event-study path here
-    implements the simpler mean-independence / linearity nulls.
+    Eq 17 / Eq 18 linear-trend detrending (paper Section 5.2 Pierce-
+    Schott application) is now SHIPPED on the event-study path via
+    the ``trends_lin`` keyword-only parameter (PR #392 / Phase 4
+    R-parity). When ``trends_lin=True``, this workflow forwards the
+    flag to both :func:`joint_pretrends_test` and
+    :func:`joint_homogeneity_test`; the consumed placebo at
+    ``base_period - 1`` is auto-dropped from step 2 and the workflow
+    skips step 2 (``pretrends_joint=None``) if no earlier placebo
+    survives. Mirrors R ``DIDHAD::did_had(..., trends_lin=TRUE)``.
+    Mutually exclusive with ``aggregate="overall"`` (raises
+    ``NotImplementedError``).
 
     Parameters
     ----------

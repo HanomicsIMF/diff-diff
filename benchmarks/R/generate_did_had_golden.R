@@ -25,13 +25,16 @@ library(jsonlite)
 library(DIDHAD)
 library(YatchewTest)
 
-# PR #392 R4 P3: pin exact upstream versions so future regeneration
-# does not silently re-anchor the goldens to a newer CRAN release
-# while CHANGELOG / REGISTRY / parity test still cite v2.0.0 / SHA
-# `edc09197`. Bump these pins (here AND in the parity test's
-# `test_metadata_versions_match`) when intentionally re-anchoring.
+# PR #392 R4 P3 / R5 P3: pin exact upstream versions so future
+# regeneration does not silently re-anchor the goldens to a newer
+# CRAN release while CHANGELOG / REGISTRY / parity test still cite
+# v2.0.0 / SHA `edc09197`. The parity contract runs through
+# `nprobust` numerical paths so we pin it too. Bump these pins
+# (here AND in the parity test's `test_metadata_versions_match`)
+# when intentionally re-anchoring.
 stopifnot(packageVersion("DIDHAD") == "2.0.0")
 stopifnot(packageVersion("YatchewTest") == "1.1.1")
+stopifnot(packageVersion("nprobust") == "0.5.0")
 
 # -------------------------------------------------------------------------
 # Panel builder: 5-period panel with F=4 (treatment onset at t=4).
