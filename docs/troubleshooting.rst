@@ -483,37 +483,64 @@ HeterogeneousAdoptionDiD (HAD) Issues
 **Problem:** ``HeterogeneousAdoptionDiD`` resolves ``target_parameter`` to
 ``"WAS_d_lower"`` when you expected ``"WAS"`` (or vice versa).
 
-**Cause:** HAD auto-detects the design path from the dose distribution. The
-``_detect_design`` rule resolves to Design 1' (``continuous_at_zero``,
-targets WAS) when EITHER ``d.min() == 0`` exactly OR ``d.min()`` is a small
-positive value below ``0.01 * median(|d|)`` (the small-share-of-treated
-escape clause). Otherwise (``d.min()`` larger than that threshold) the
-estimator routes to Design 1, with a further check for mass-point structure
-(modal fraction at ``d.min()`` exceeding 2% routes to ``mass_point``;
-otherwise ``continuous_near_d_lower``); both Design 1 paths target
-``WAS_{d_lower}``. So a Design 1 resolution only fires when ``d.min()``
-is meaningfully positive relative to the dose scale.
+**Cause:** HAD auto-detects the design path from the unit-level
+post-treatment dose ``D_{g,F}`` (the dose at the first treated period
+``F``, one value per unit), NOT from the full panel ``dose`` column. The
+panel column carries structural pre-period zeros (HAD requires
+``D_{g,t} = 0`` for ``t < F``), so ``had_data['dose'].min()`` is always
+zero on a valid HAD panel and tells you nothing about the resolved
+design. ``_detect_design`` then resolves on ``D_{g,F}`` and picks Design
+1' (``continuous_at_zero``, targets WAS) when EITHER
+``D_{g,F}.min() == 0`` exactly OR ``D_{g,F}.min()`` is a small positive
+value below ``0.01 * median(|D_{g,F}|)`` (the small-share-of-treated
+escape clause). Otherwise the estimator routes to Design 1, with a
+further check for mass-point structure (modal fraction at ``D_{g,F}.min()``
+exceeding 2% routes to ``mass_point``; otherwise
+``continuous_near_d_lower``); both Design 1 paths target ``WAS_{d_lower}``.
 
 **Solutions:**
 
 .. code-block:: python
 
-   # Inspect the dose support before fitting
    import numpy as np
-   d = data['dose'].to_numpy()
-   print(data['dose'].describe())
-   print(f"d.min() = {d.min():.6g}; "
-         f"0.01 * median(|d|) = {0.01 * np.median(np.abs(d)):.6g}; "
-         f"d.min() < threshold => Design 1' (WAS)")
+   import pandas as pd
+   from diff_diff import HeterogeneousAdoptionDiD
+
+   # Build a HAD-shape panel: D=0 in pre-periods (t < F), D > 0 only at F+.
+   rng = np.random.default_rng(42)
+   G, F, T = 200, 4, 5
+   doses = rng.beta(0.5, 1.0, size=G)
+   rows = []
+   for g in range(G):
+       for t in range(1, T + 1):
+           y = (rng.normal()
+                + (doses[g] + doses[g] ** 2) * (t >= F)
+                + rng.normal(0, 0.5))
+           d = doses[g] if t >= F else 0.0
+           rows.append({'unit': g, 'period': t, 'y': y, 'dose': d})
+   had_data = pd.DataFrame(rows)
+
+   # Inspect the support the detector actually uses: per-unit dose at the
+   # first treated period F. Pre-period zeros on the panel column are
+   # structural and ignored by `_detect_design()`.
+   d_at_F = had_data.loc[had_data['period'] == F].set_index('unit')['dose']
+   print(d_at_F.describe())
+   d_min = float(d_at_F.min())
+   d_thr = 0.01 * float(np.median(np.abs(d_at_F)))
+   print(f"D_{{g,F}}.min() = {d_min:.6g}; "
+         f"0.01 * median(|D_{{g,F}}|) = {d_thr:.6g}; "
+         f"D_{{g,F}}.min() < threshold => Design 1' (WAS)")
 
    # Check the resolved estimand after fitting
-   results = est.fit(data, outcome_col='y', unit_col='unit',
-                     time_col='period', dose_col='dose')
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(had_data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose',
+                     aggregate='event_study')
    print(f"Resolved: {results.target_parameter}")
 
-   # If you intend Design 1' but `d.min()` exceeds the threshold, verify
-   # the dose-variable encoding (e.g. log-transformed doses where 0 was
-   # mapped to a small positive value larger than 1% of the median).
+   # If you intend Design 1' but `D_{g,F}.min()` exceeds the threshold,
+   # verify the dose-variable encoding (e.g. log-transformed doses where
+   # 0 was mapped to a small positive value larger than 1% of the median).
 
 "Mass-point design selected"
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -535,6 +562,37 @@ SE path is not used here).
 **Solutions:**
 
 .. code-block:: python
+
+   import numpy as np
+   import pandas as pd
+   from diff_diff import HeterogeneousAdoptionDiD
+
+   # Build a HAD panel with a heavy boundary mass at d_lower so the
+   # modal fraction at d.min() exceeds 2% and `_detect_design` resolves
+   # to `mass_point`.
+   rng = np.random.default_rng(42)
+   G, F, T = 200, 4, 5
+   d_lower = 0.5
+   mass_frac = 0.3
+   doses = np.where(
+       rng.uniform(size=G) < mass_frac,
+       d_lower,
+       rng.uniform(d_lower + 0.1, 2.0, size=G),
+   )
+   rows = []
+   for g in range(G):
+       for t in range(1, T + 1):
+           y = (rng.normal()
+                + doses[g] * (t >= F)
+                + rng.normal(0, 0.5))
+           d = doses[g] if t >= F else 0.0
+           rows.append({'unit': g, 'period': t, 'y': y, 'dose': d})
+   had_data = pd.DataFrame(rows)
+
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(had_data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose',
+                     aggregate='event_study')
 
    # Inspect the resolved design
    print(f"Design: {results.design}")  # 'mass_point' here
@@ -592,6 +650,30 @@ a ``UserWarning``). The fit raises only when the panel is staggered
 **Solutions:**
 
 .. code-block:: python
+
+   import numpy as np
+   import pandas as pd
+
+   # Build a staggered HAD panel for this example: 120 units, three
+   # cohorts (30 never-treated + 30 treated at period 5 + 60 treated at
+   # period 8). Dose is zero pre-treatment per unit and a constant
+   # positive value post-treatment, so the first_treat / dose-path
+   # consistency validator passes. The 60-unit last cohort gives the
+   # boundary local-linear estimator enough distinct dose values to fit.
+   np.random.seed(42)
+   n_units, n_periods = 120, 10
+   first_treat_per_unit = np.array([0] * 30 + [5] * 30 + [8] * 60)
+   dose_per_unit = np.where(
+       first_treat_per_unit > 0, np.random.uniform(0.5, 2.0, n_units), 0.0
+   )
+   rows = []
+   for u in range(n_units):
+       ft = first_treat_per_unit[u]
+       for t in range(n_periods):
+           d_ut = dose_per_unit[u] if (ft > 0 and t >= ft) else 0.0
+           y_ut = (d_ut > 0) * dose_per_unit[u] * 0.5 + np.random.normal()
+           rows.append((u, t, d_ut, ft, y_ut))
+   data = pd.DataFrame(rows, columns=["unit", "period", "dose", "first_treat", "y"])
 
    # Primary remedy: pass `first_treat_col` so the estimator auto-filters
    # to the last-treatment cohort + never-treated and emits a UserWarning.
