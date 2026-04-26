@@ -474,6 +474,142 @@ cannot produce an ATT estimate.
        post_obs = group[group['period'] >= g]
        print(f"Cohort {g}: {len(post_obs)} post-treatment observations")
 
+HeterogeneousAdoptionDiD (HAD) Issues
+-------------------------------------
+
+"Resolved estimand is not what I expected (WAS vs WAS_d_lower)"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** ``HeterogeneousAdoptionDiD`` resolves ``target_parameter`` to
+``"WAS_d_lower"`` when you expected ``"WAS"`` (or vice versa).
+
+**Cause:** HAD auto-detects the design path from the dose distribution. The
+``_detect_design`` rule resolves to Design 1' (``continuous_at_zero``,
+targets WAS) when EITHER ``d.min() == 0`` exactly OR ``d.min()`` is a small
+positive value below ``0.01 * median(|d|)`` (the small-share-of-treated
+escape clause). Otherwise (``d.min()`` larger than that threshold) the
+estimator routes to Design 1, with a further check for mass-point structure
+(modal fraction at ``d.min()`` exceeding 2% routes to ``mass_point``;
+otherwise ``continuous_near_d_lower``); both Design 1 paths target
+``WAS_{d_lower}``. So a Design 1 resolution only fires when ``d.min()``
+is meaningfully positive relative to the dose scale.
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Inspect the dose support before fitting
+   import numpy as np
+   d = data['dose'].to_numpy()
+   print(data['dose'].describe())
+   print(f"d.min() = {d.min():.6g}; "
+         f"0.01 * median(|d|) = {0.01 * np.median(np.abs(d)):.6g}; "
+         f"d.min() < threshold => Design 1' (WAS)")
+
+   # Check the resolved estimand after fitting
+   results = est.fit(data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose')
+   print(f"Resolved: {results.target_parameter}")
+
+   # If you intend Design 1' but `d.min()` exceeds the threshold, verify
+   # the dose-variable encoding (e.g. log-transformed doses where 0 was
+   # mapped to a small positive value larger than 1% of the median).
+
+"Mass-point design selected"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** HAD reports that the ``mass_point`` design was selected
+instead of ``continuous_at_zero`` or ``continuous_near_d_lower``.
+
+**Cause:** ``mass_point`` is a distinct Design 1 estimator path from the
+dCDH 2026 paper (Section 3.2.4), not a fallback from the continuous
+local-linear fits. ``_detect_design()`` resolves to ``mass_point`` when the
+modal fraction at ``d.min()`` exceeds 2%, signalling a heavy point mass at
+the dose-support boundary. On this path both the point estimate and the SE
+differ from the continuous paths: the estimator uses the Wald-IV
+sample-average ratio with binary instrument ``Z_g = 1{D_{g,2} > d_lower}``
+- ``(Ybar_{Z=1} - Ybar_{Z=0}) / (Dbar_{Z=1} - Dbar_{Z=0})`` - and inference
+uses the structural-residual 2SLS sandwich (the local-linear / CCT-2014
+SE path is not used here).
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Inspect the resolved design
+   print(f"Design: {results.design}")  # 'mass_point' here
+
+   # The mass-point Wald-IV estimator + structural-residual 2SLS
+   # sandwich is the canonical Section 3.2.4 path for designs with a
+   # heavy boundary point mass; accept the resolution unless you can
+   # re-bin the dose variable so the modal fraction at d.min() drops
+   # below 2% (then the detector picks continuous_near_d_lower).
+
+"NotImplementedError on survey + mass-point + vcov_type='classical'"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** Calling ``HeterogeneousAdoptionDiD.fit(..., vcov_type="classical")``
+under ``survey_design=SurveyDesign(...)`` (or under the deprecated ``survey=``
+alias) raises ``NotImplementedError`` on the mass-point path. The same
+``NotImplementedError`` fires on the deprecated ``weights=`` shortcut +
+``aggregate="event_study"`` + ``cband=True``.
+
+**Cause:** The per-unit 2SLS influence function returned by the mass-point fit
+is HC1-scaled so that ``compute_survey_if_variance`` and the sup-t bootstrap
+target ``V_HC1`` consistently. Mixing it with a classical analytical SE would
+silently report a ``V_HC1``-targeted variance under a ``classical`` label.
+
+**Solutions:**
+
+.. code-block:: python
+
+   # The constructor default `robust=False` maps to `vcov_type='classical'`
+   # and triggers the guard on the mass-point survey path - so plain
+   # `HeterogeneousAdoptionDiD()` is NOT a workaround. Pick one of:
+   est = HeterogeneousAdoptionDiD(vcov_type='hc1')
+   # Or equivalently:
+   est = HeterogeneousAdoptionDiD(robust=True)  # maps to vcov_type='hc1'
+
+A classical-aligned IF derivation is queued for a follow-up release; until
+then, ``vcov_type='hc1'`` (or the equivalent ``robust=True``) is the
+recommended path for survey + mass-point fits. See :doc:`api/had` for the
+full SE-regime contract.
+
+"Panel-only event-study restriction"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Problem:** ``HeterogeneousAdoptionDiD.fit(..., aggregate="event_study")``
+raises on a staggered panel.
+
+**Cause:** The Appendix B.2 event-study extension requires either a
+common-adoption panel (single first-treat period; ``first_treat_col`` is
+then optional and the period is inferred from the dose invariant) or a
+staggered panel with ``first_treat_col`` provided so the estimator can
+auto-filter to the last-treatment cohort plus never-treated units (with
+a ``UserWarning``). The fit raises only when the panel is staggered
+**and** ``first_treat_col`` is missing.
+
+**Solutions:**
+
+.. code-block:: python
+
+   # Primary remedy: pass `first_treat_col` so the estimator auto-filters
+   # to the last-treatment cohort + never-treated and emits a UserWarning.
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose',
+                     first_treat_col='first_treat',
+                     aggregate='event_study')
+
+   # Equivalent: subset to the last-treatment cohort + never-treated
+   # before fitting (skips the UserWarning).
+   last_cohort = data['first_treat'].max()
+   subset = data[(data['first_treat'] == last_cohort) |
+                 (data['first_treat'] == 0)]
+   results = est.fit(subset, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose',
+                     aggregate='event_study')
+
 Imputation / Two-Stage DiD Issues
 ----------------------------------
 

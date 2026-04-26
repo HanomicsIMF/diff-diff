@@ -213,6 +213,36 @@ The synthdid package implements Arkhangelsky et al. (2021):
        post_periods=post_periods
    )
 
+Heterogeneous Adoption (HAD)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When every unit is treated at the post period (universal-rollout policies,
+industry-wide regime changes) but treatment intensity varies across units,
+the standard R workhorses (``did``, ``fixest``, ``synthdid``,
+``DIDmultiplegtDYN``) assume an untreated comparison group exists and do
+not apply. The dedicated R package ``DIDHAD`` (de Chaisemartin et al.,
+August 2025) covers the QUG case (Design 1', ``d_lower = 0``) from the
+same arXiv paper.
+
+``diff-diff`` ships :class:`~diff_diff.HeterogeneousAdoptionDiD`, which
+implements de Chaisemartin, Ciccia, D'Haultfoeuille and Knau (2026,
+arXiv:2405.04465v6) and adds two surfaces beyond the QUG-focused R
+package: Design 1 (no QUG, ``d_lower > 0``, targets ``WAS_{d_lower}`` under
+Assumption 6 or sign-only under Assumption 5), and survey-design
+integration via Binder (1983) Taylor-series linearization (sampling weights
++ optional strata / PSU / FPC). The diagnostic battery
+:func:`~diff_diff.did_had_pretest_workflow` surfaces violations of the HAD
+identification assumptions (the design path is auto-detected separately by
+:meth:`HeterogeneousAdoptionDiD.fit` from the dose support).
+
+.. code-block:: python
+
+   from diff_diff import HeterogeneousAdoptionDiD
+
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose')
+
 Key Differences
 ---------------
 
@@ -372,6 +402,11 @@ Feature Comparison Table
      - ❌
      - ❌
      - ❌
+   * - Heterogeneous adoption (HAD)
+     - ✅
+     - ❌
+     - ❌
+     - ❌
 
 .. note::
 
@@ -383,6 +418,10 @@ Feature Comparison Table
    Continuous DiD is available via the ``did`` package continuous extension;
    Triple Difference requires manual implementation in R.
    TROP and Efficient DiD have no direct R equivalents.
+   HeterogeneousAdoptionDiD (dCDH 2026) overlaps with the dedicated R
+   package ``DIDHAD`` (de Chaisemartin et al., 2025), which covers the
+   QUG case (Design 1'); diff-diff additionally covers Design 1 (no QUG,
+   ``WAS_{d_lower}``) and survey-design integration via Binder TSL.
 
 Migration Tips
 --------------
@@ -399,3 +438,9 @@ Migration Tips
 
 5. **Missing data**: diff-diff requires complete data; use ``balance_panel()``
    or ``dropna()`` first
+
+6. **Heterogeneous Adoption (HAD)**: If you need surfaces the R ``DIDHAD``
+   package does not cover - Design 1 (no QUG, ``WAS_{d_lower}``) or
+   survey-design integration - reach for
+   :class:`~diff_diff.HeterogeneousAdoptionDiD`. See the
+   `Heterogeneous Adoption (HAD)`_ section above for the migration pattern.

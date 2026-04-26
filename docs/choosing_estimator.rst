@@ -93,6 +93,10 @@ Quick Reference
      - Continuous dose / treatment intensity
      - Strong Parallel Trends (SPT) for dose-response; PT for binarized ATT
      - ATT\ :sup:`loc` (PT); ATT(d), ACRT(d) (SPT)
+   * - ``HeterogeneousAdoptionDiD``
+     - Universal rollout, dose varies, no untreated unit
+     - dCDH 2026 Assumptions (Design 1' QUG case or Design 1 with A6/A5)
+     - WAS or WAS\ :sub:`d_lower` per resolved estimand; event-study Appendix B.2
    * - ``SunAbraham``
      - Staggered adoption, interaction-weighted
      - Conditional parallel trends
@@ -357,6 +361,49 @@ Use :class:`~diff_diff.ContinuousDiD` when:
    print(f"Overall ATT: {results.overall_att:.3f}")
    att_curve = results.dose_response_att.to_dataframe()
 
+Universal Rollout / No Untreated Control
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use :class:`~diff_diff.HeterogeneousAdoptionDiD` when:
+
+- **Every unit is treated at the post period** (universal-rollout policy,
+  industry-wide tariff change, simultaneous launch into all markets)
+- Treatment **intensity (dose) varies across units**, but no genuinely
+  untreated control group exists to anchor a standard DiD contrast
+- :class:`~diff_diff.ContinuousDiD` is unavailable because its untreated-group
+  requirement (``D = 0``) is violated
+
+The estimator implements de Chaisemartin, Ciccia, D'Haultfoeuille and Knau
+(2026, arXiv:2405.04465v6) and resolves to one of two estimands depending on
+the dose support:
+
+- **Design 1' (QUG case, ``d_lower = 0``)** identifies the **Weighted Average
+  Slope (WAS)** under the Quasi-Untreated-Group assumption (units with the
+  smallest dose serve as the comparison anchor). The shipped result class
+  exposes ``target_parameter == "WAS"``.
+- **Design 1 (no QUG, ``d_lower > 0``)** identifies ``WAS_{d_lower}`` under
+  Assumption 6, or sign identification only under Assumption 5; neither
+  additional assumption is testable via pre-trends. Result class exposes
+  ``target_parameter == "WAS_d_lower"``.
+
+The dose-distribution path is auto-detected. Run
+:func:`~diff_diff.did_had_pretest_workflow` to vet the identifying assumptions
+before estimation; see :doc:`api/had` for the full API and SE-regime contract.
+
+.. code-block:: python
+
+   from diff_diff import HeterogeneousAdoptionDiD, did_had_pretest_workflow
+
+   pretests = did_had_pretest_workflow(data, outcome_col='y', unit_col='unit',
+                                       time_col='period', dose_col='dose')
+
+   est = HeterogeneousAdoptionDiD()
+   results = est.fit(data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose')
+
+   print(f"Resolved estimand: {results.target_parameter}")
+   print(f"Estimate: {results.att:.3f}")
+
 Efficient DiD
 ~~~~~~~~~~~~~
 
@@ -615,6 +662,9 @@ differences helps interpret results and choose appropriate inference.
    * - ``ContinuousDiD``
      - Analytical (influence function)
      - Uses influence-function-based SEs by default. Use ``n_bootstrap=199`` (or higher) for multiplier bootstrap inference with proper CIs.
+   * - ``HeterogeneousAdoptionDiD``
+     - Path-dependent (CCT-2014 / 2SLS / Binder TSL)
+     - Three SE regimes per :doc:`api/had`. **Unweighted**: continuous-dose paths use the CCT-2014 weighted-robust SE from the in-house ``lprobust`` port; mass-point uses a 2SLS sandwich. **Deprecated ``weights=`` shortcut**: continuous reuses CCT-2014; mass-point uses analytical weighted 2SLS (``classical`` / ``hc1``; CR1 when ``cluster=`` is supplied, except mass-point + ``cluster=`` + ``aggregate="event_study"`` + ``cband=True`` is rejected outright - see :doc:`api/had` for the cluster-combination deviation note); yields ``variance_formula="pweight"`` / ``"pweight_2sls"``. **``survey_design=SurveyDesign(weights="col", ...)``**: both paths compose Binder (1983) Taylor-series linearization (``"survey_binder_tsl"`` / ``"survey_binder_tsl_2sls"``); mass-point + ``survey_design=`` + ``cluster=`` is also rejected outright (combined survey + cluster inference is deferred). The two weighted families differ on this estimator until the next-minor unification lands. Per-horizon CIs are pointwise; sup-t bands available only on the weighted event-study path via ``cband=True``.
    * - ``SunAbraham``
      - Cluster-robust (unit level)
      - Clusters at unit level by default. Specify ``cluster`` to override. Use ``n_bootstrap`` for pairs bootstrap inference.
@@ -777,6 +827,11 @@ estimation. The depth of support varies by estimator:
      - Full
      - Full (analytical)
      - Multiplier at PSU
+   * - ``HeterogeneousAdoptionDiD``
+     - pweight only
+     - Full (Binder TSL)
+     - --
+     - Multiplier (event-study, ``cband=True`` only)
    * - ``EfficientDiD``
      - Full
      - Full
