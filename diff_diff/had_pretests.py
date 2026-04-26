@@ -3516,55 +3516,14 @@ def joint_pretrends_test(
             f"(base_period={base_period!r})."
         )
 
-    # ---- trends_lin: identify the consumed placebo (base_period - 1)
-    # and drop it from the test set BEFORE aggregation.
-    # The F-2 → F-1 evolution is "consumed" by the per-group slope
-    # estimator: at t = base_period - 1 the detrended dy_t = dy_t -
-    # (-1) × slope = (Y_{base-1} - Y_base) + (Y_base - Y_{base-1}) = 0
-    # for every unit. Feeding that all-zero residual into
-    # `stute_joint_pretest` would trip the exact-linear short-circuit
-    # and report a mechanical p_value=1.0 — a confidently-non-rejecting
-    # placebo that is actually no placebo at all. Drop it explicitly,
-    # mirroring R's "max placebo lag reduces by 1" convention and our
-    # HAD.fit `e=-2` drop. Emits UserWarning when this filter fires
-    # so the caller knows their `pre_periods` was modified.
+    # ---- trends_lin: defer the consumed-placebo drop and base-1
+    # identification until AFTER the validator block runs (so we can
+    # use t_pre_list to enforce the non-terminal-base guard and the
+    # observed-period predecessor consistently). On 2-period panels
+    # the validator does not run and trends_lin needs F-2, which is
+    # impossible — front-door-reject here.
     base_minus_1_period: Any = None
     pre_periods_effective = list(pre_periods)
-    if trends_lin:
-        for p, r in period_rank.items():
-            if r == base_rank - 1:
-                base_minus_1_period = p
-                break
-        if base_minus_1_period is None:
-            raise ValueError(
-                f"joint_pretrends_test(trends_lin=True) requires the "
-                f"period immediately before base_period={base_period!r} "
-                f"to exist in the panel (rank {base_rank - 1}). The "
-                f"per-group linear-trend slope Y[g, base] - Y[g, base-1] "
-                f"is not identified without it. Available periods: "
-                f"{sorted(period_rank.keys(), key=lambda t: period_rank[t])!r}."
-            )
-        if base_minus_1_period in pre_periods_effective:
-            warnings.warn(
-                f"joint_pretrends_test(trends_lin=True): dropping "
-                f"period {base_minus_1_period!r} from pre_periods — it "
-                f"is the 'consumed' placebo (the F-2 → F-1 evolution "
-                f"used by the per-group slope estimator), so under "
-                f"trends_lin its detrended residual is mechanically "
-                f"zero. R's `did_had(trends_lin=TRUE)` reduces max "
-                f"placebo lag by 1 with the same effect.",
-                UserWarning,
-                stacklevel=2,
-            )
-            pre_periods_effective = [t for t in pre_periods_effective if t != base_minus_1_period]
-        if len(pre_periods_effective) == 0:
-            raise ValueError(
-                f"joint_pretrends_test(trends_lin=True): no testable "
-                f"placebo horizons remain after dropping the consumed "
-                f"placebo at base_period - 1 = {base_minus_1_period!r}. "
-                f"Pass at least one earlier pre-period (rank < "
-                f"{base_rank - 1}) when using trends_lin=True."
-            )
 
     # Event-study validation contract (paper Appendix B.2):
     # When the panel has >= 3 distinct periods, always route through
@@ -3577,6 +3536,13 @@ def joint_pretrends_test(
     # panels the validator does not apply; skip and fall through to the
     # simpler balance/invariant guards in `_aggregate_for_joint_test`.
     n_periods = int(data[time_col].nunique())
+    if trends_lin and n_periods < 3:
+        raise ValueError(
+            f"joint_pretrends_test(trends_lin=True) requires a panel "
+            f"with at least 3 distinct time periods so the per-group "
+            f"slope Y[g, base] - Y[g, base - 1] is identified. Got "
+            f"n_periods={n_periods}."
+        )
     data_filtered: pd.DataFrame = data
     if n_periods >= 3:
         F_val, t_pre_list, _t_post_list, data_filtered, _filter_info = (
@@ -3610,6 +3576,68 @@ def joint_pretrends_test(
                 f"periods. Not-pre entries: {not_pre!r}. Validator's "
                 f"pre-period set: {list(t_pre_list)!r}."
             )
+        # PR #392 R3 P1 (non-terminal base guard): paper Eq 17 / Eq 18
+        # and R `DIDHAD::did_had(..., trends_lin=TRUE)` anchor the
+        # detrending at F-1 (the last validated pre-period) and use
+        # Y[F-1] - Y[F-2] as the slope. A direct caller passing
+        # base_period < F-1 (e.g. F-2) would compute a different slope
+        # at a different anchor, silently changing the methodology
+        # away from the documented Eq 17/18 construction. Reject
+        # explicitly. Workflow + HAD.fit always pass F-1; this check
+        # only fires on direct user calls with non-terminal bases.
+        if trends_lin and base_period != t_pre_list[-1]:
+            raise ValueError(
+                f"joint_pretrends_test(trends_lin=True) requires "
+                f"base_period to equal the last validated pre-period "
+                f"({t_pre_list[-1]!r}, the canonical Eq 17 anchor "
+                f"F-1). Got base_period={base_period!r}. Anchoring at "
+                f"any other pre-period would compute a different "
+                f"slope and detrending that does not match paper "
+                f"Eq 17 / Eq 18 or R DIDHAD::did_had(trends_lin=TRUE)."
+            )
+        # PR #392 R3 P1 (observed-period base-1 lookup) + R1 P0
+        # (consumed-placebo drop) consolidated:
+        # base_minus_1_period = t_pre_list[-2] (= F-2, the validated
+        # observed pre-period immediately before F-1). Using
+        # t_pre_list ensures correctness on ordered-categorical panels
+        # with unused intermediate levels (the validator's t_pre_list
+        # is built from observed contiguous pre-periods, not from the
+        # full dtype's category list). Then drop t_pre_list[-2] from
+        # pre_periods if present (the consumed placebo whose detrended
+        # residual is mechanically zero).
+        if trends_lin:
+            if len(t_pre_list) < 2:
+                raise ValueError(
+                    f"joint_pretrends_test(trends_lin=True) requires "
+                    f"at least 2 validated pre-periods so the per-"
+                    f"group slope Y[g, F-1] - Y[g, F-2] is identified. "
+                    f"Got t_pre_list={list(t_pre_list)!r}."
+                )
+            base_minus_1_period = t_pre_list[-2]
+            if base_minus_1_period in pre_periods_effective:
+                warnings.warn(
+                    f"joint_pretrends_test(trends_lin=True): dropping "
+                    f"period {base_minus_1_period!r} from pre_periods "
+                    f"— it is the 'consumed' placebo (the F-2 → F-1 "
+                    f"evolution used by the per-group slope "
+                    f"estimator), so under trends_lin its detrended "
+                    f"residual is mechanically zero. R's "
+                    f"`did_had(trends_lin=TRUE)` reduces max placebo "
+                    f"lag by 1 with the same effect.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                pre_periods_effective = [
+                    t for t in pre_periods_effective if t != base_minus_1_period
+                ]
+            if len(pre_periods_effective) == 0:
+                raise ValueError(
+                    f"joint_pretrends_test(trends_lin=True): no testable "
+                    f"placebo horizons remain after dropping the consumed "
+                    f"placebo at base_period - 1 = {base_minus_1_period!r}. "
+                    f"Pass at least one earlier observed pre-period when "
+                    f"using trends_lin=True."
+                )
 
     d_arr, dy_by_horizon, _ = _aggregate_for_joint_test(
         data_filtered,
@@ -3915,6 +3943,14 @@ def joint_homogeneity_test(
     # time-varying post-dose would make the per-horizon refit on
     # `[1, D_g]` misspecify the regressor.
     n_periods = int(data[time_col].nunique())
+    if trends_lin and n_periods < 3:
+        raise ValueError(
+            f"joint_homogeneity_test(trends_lin=True) requires a "
+            f"panel with at least 3 distinct time periods so the "
+            f"per-group slope Y[g, base] - Y[g, base - 1] is "
+            f"identified. Got n_periods={n_periods}."
+        )
+    base_minus_1_period_validated: Any = None  # set inside validator block under trends_lin
     data_filtered: pd.DataFrame = data
     if n_periods >= 3:
         F_val, t_pre_list, t_post_list, data_filtered, _filter_info = (
@@ -3946,6 +3982,30 @@ def joint_homogeneity_test(
                 f"periods. Not-post entries: {not_post!r}. Validator's "
                 f"post-period set: {list(t_post_list)!r}."
             )
+        # PR #392 R3 P1 (non-terminal base guard + observed-period
+        # base-1 lookup, twin of joint_pretrends_test). Eq 17 anchors
+        # at F-1 and uses Y[F-1] - Y[F-2] as slope; require base ==
+        # t_pre_list[-1] AND derive base-1 from t_pre_list[-2].
+        if trends_lin and base_period != t_pre_list[-1]:
+            raise ValueError(
+                f"joint_homogeneity_test(trends_lin=True) requires "
+                f"base_period to equal the last validated pre-period "
+                f"({t_pre_list[-1]!r}, the canonical Eq 17 anchor "
+                f"F-1). Got base_period={base_period!r}. Anchoring at "
+                f"any other pre-period would compute a different "
+                f"slope and detrending that does not match paper "
+                f"Eq 17 / page 32 or R DIDHAD::did_had(trends_lin=TRUE)."
+            )
+        if trends_lin and len(t_pre_list) < 2:
+            raise ValueError(
+                f"joint_homogeneity_test(trends_lin=True) requires "
+                f"at least 2 validated pre-periods so the per-group "
+                f"slope Y[g, F-1] - Y[g, F-2] is identified. Got "
+                f"t_pre_list={list(t_pre_list)!r}."
+            )
+        # Capture the validator's predecessor for downstream use.
+        if trends_lin:
+            base_minus_1_period_validated = t_pre_list[-2]
 
     d_arr, dy_by_horizon, _ = _aggregate_for_joint_test(
         data_filtered,
@@ -3988,20 +4048,13 @@ def joint_homogeneity_test(
     # dy_t. The post-period delta = t_rank - base_rank > 0, so the
     # subtraction extrapolates the linear trend FORWARD into post-periods.
     if trends_lin:
-        base_minus_1_period_h: Any = None
-        for p, r in period_rank.items():
-            if r == base_rank - 1:
-                base_minus_1_period_h = p
-                break
-        if base_minus_1_period_h is None:
-            raise ValueError(
-                f"joint_homogeneity_test(trends_lin=True) requires the "
-                f"period immediately before base_period={base_period!r} "
-                f"to exist in the panel (rank {base_rank - 1}). The "
-                f"per-group linear-trend slope Y[g, base] - Y[g, base-1] "
-                f"is not identified without it. Available periods: "
-                f"{sorted(period_rank.keys(), key=lambda t: period_rank[t])!r}."
-            )
+        # PR #392 R3 P1: use the validator's t_pre_list[-2] as the
+        # predecessor (captured above as base_minus_1_period_validated).
+        # This is robust to ordered-categorical panels with unused
+        # intermediate levels because the validator builds t_pre_list
+        # from observed contiguous pre-periods, not the full dtype
+        # category list.
+        base_minus_1_period_h = base_minus_1_period_validated
         slope_subset_h = data_filtered[
             data_filtered[time_col].isin([base_period, base_minus_1_period_h])
         ]

@@ -4539,7 +4539,7 @@ class TestJointPretestsTrendsLin:
         # before treatment), post=[4, 5].
         df = self._panel(rng_seed=14, F=4, T=5)
         df_trim = df[df["time"] >= 3].copy()
-        with pytest.raises(ValueError, match="period immediately before base_period"):
+        with pytest.raises(ValueError, match=r"at least 2 (validated )?pre-periods"):
             joint_homogeneity_test(
                 df_trim,
                 "y",
@@ -4715,6 +4715,102 @@ class TestJointPretestsTrendsLin:
             report.homogeneity_joint is not None
         ), "expected homogeneity_joint to still run after step 2 skip"
         assert np.isfinite(report.homogeneity_joint.p_value)
+
+    def test_pretrends_trends_lin_nonterminal_base_raises(self):
+        """Direct caller passing base_period < t_pre_list[-1] under
+        trends_lin=True must raise — Eq 17 anchors at F-1.
+        Regression for PR #392 R3 P1 (methodology guard)."""
+        df = self._panel(rng_seed=40)
+        # Panel periods 1..5, F=4. t_pre_list = [1, 2, 3], F-1 = 3.
+        # Pass base_period=2 (non-terminal pre-period).
+        with pytest.raises(ValueError, match="last validated pre-period"):
+            joint_pretrends_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=[1],
+                base_period=2,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+
+    def test_homogeneity_trends_lin_nonterminal_base_raises(self):
+        """Twin guard for joint_homogeneity_test."""
+        df = self._panel(rng_seed=41)
+        with pytest.raises(ValueError, match="last validated pre-period"):
+            joint_homogeneity_test(
+                df,
+                "y",
+                "d",
+                "time",
+                "unit",
+                post_periods=[4, 5],
+                base_period=2,
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+
+    def test_pretrends_trends_lin_unused_categorical_observed_only(self):
+        """Ordered categorical time column with an unused intermediate
+        level: trends_lin must resolve base_period - 1 to the previous
+        OBSERVED period, not to the unused level (which would KeyError
+        on the slope-pivot lookup). Regression for PR #392 R3 P1."""
+        df_int = self._panel(rng_seed=42)
+        # Convert time to ordered categorical with an unused intermediate
+        # level inserted between observed levels t3 and t4.
+        cat_levels = ["t1", "t2", "t3", "t_unused", "t4", "t5"]
+        time_map = {1: "t1", 2: "t2", 3: "t3", 4: "t4", 5: "t5"}
+        df = df_int.copy()
+        df["time"] = pd.Categorical(
+            df["time"].map(time_map),
+            categories=cat_levels,
+            ordered=True,
+        )
+        # Sanity: t_unused is in the dtype but absent from data.
+        assert "t_unused" in df["time"].cat.categories
+        assert "t_unused" not in set(df["time"].dropna().unique())
+        # F=4 → t_pre_list = [t1, t2, t3], base must equal t3 under
+        # trends_lin. Under the OLD period_rank lookup, base_minus_1
+        # by rank would resolve to t_unused (rank 2 below t3=rank 4...
+        # wait actually rank-1 = rank(t3)-1 = 3-1 = 2, which is t3
+        # itself wait no t3 = rank 2). Let me reason: cat_levels
+        # ranks t1=0, t2=1, t3=2, t_unused=3, t4=4, t5=5. For
+        # base=t3 (rank 2), base-1 by rank = rank 1 = t2 (correct).
+        # Better demonstration: pass base=t4 (post-period) — but that
+        # would be invalid by other guards. Use a setup where the
+        # unused level lies BEFORE base in chronology: place
+        # t_unused between t2 and t3, then base=t3.
+        cat_levels2 = ["t1", "t2", "t_unused", "t3", "t4", "t5"]
+        df2 = df_int.copy()
+        df2["time"] = pd.Categorical(
+            df2["time"].map(time_map),
+            categories=cat_levels2,
+            ordered=True,
+        )
+        # Now base=t3 (rank 3); base-1 by rank = t_unused (rank 2,
+        # not in data). Old code would KeyError on the slope pivot;
+        # new observed-only lookup resolves to t2 (the previous
+        # observed period). Verify the call SUCCEEDS.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            r = joint_pretrends_test(
+                df2,
+                "y",
+                "d",
+                "time",
+                "unit",
+                pre_periods=["t1"],
+                base_period="t3",
+                n_bootstrap=99,
+                seed=42,
+                trends_lin=True,
+            )
+        assert np.isfinite(r.cvm_stat_joint)
+        assert np.isfinite(r.p_value)
 
     def test_workflow_trends_lin_with_overall_aggregate_raises(self):
         """trends_lin=True only valid on event_study aggregate."""
