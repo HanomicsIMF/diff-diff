@@ -418,6 +418,26 @@ class ChaisemartinDHaultfoeuilleResults:
         cohort-sharing SE deviation from R documented for
         ``path_effects``. See REGISTRY.md
         ``Note (Phase 3 by_path ...)`` → "Per-path placebos".
+    path_cumulated_event_study : dict, optional
+        Per-path cumulated level effects ``delta_{path, l} =
+        sum_{l'=1..l} DID^{fd}_{path, l'}`` for ``l = 1..L_max``,
+        keyed by observed treatment trajectory (tuple of int). Inner
+        dict is keyed by horizon directly (no ``"horizons"`` wrapper);
+        each entry holds ``{"effect", "se", "t_stat", "p_value",
+        "conf_int", "n_obs"}``. Populated when ``by_path`` is a
+        positive int AND ``trends_linear=True`` AND ``L_max >= 1``;
+        ``None`` otherwise. Mirrors the global ``linear_trends_effects``
+        cumulation: SE on the cumulated layer is the conservative
+        upper bound (sum of per-horizon component SEs from
+        ``path_effects[path]["horizons"][l]["se"]``, NaN-consistent).
+        Built AFTER bootstrap propagation so the cumulated SE / t / p
+        / CI are derived from the FINAL post-bootstrap per-horizon
+        SEs when ``n_bootstrap > 0``. Surfaced as ``cumulated_effect``
+        / ``cumulated_se`` columns on
+        ``to_dataframe(level="by_path")`` (always-present, NaN-when-
+        None) and as a per-path "Cumulated Level Effects" sub-section
+        in ``summary()``. See REGISTRY.md ``Note (Phase 3 by_path
+        ...)`` → "Per-path linear-trends DID^{fd}".
     path_sup_t_bands : dict, optional
         Per-path joint sup-t simultaneous-band metadata, keyed by
         observed treatment trajectory (tuple of int). Each entry holds

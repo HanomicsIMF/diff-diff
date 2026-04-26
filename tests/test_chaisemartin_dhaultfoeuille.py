@@ -7300,6 +7300,115 @@ class TestByPathTrendsLinear:
         )
 
     @pytest.mark.slow
+    def test_per_path_placebos_with_trends_linear_bootstrap_inference(self):
+        """Bootstrap-derived inference fields populated on negative-
+        horizon ``path_placebo_event_study`` rows under ``by_path +
+        trends_linear + placebo + n_bootstrap > 0``. Pins the placebo
+        bootstrap collector path that consumes the first-differenced
+        ``Y_mat`` AND the bootstrap propagation block at
+        ``chaisemartin_dhaultfoeuille.py:3097-`` for negative horizons.
+        Without this, a silent regression in the placebo bootstrap
+        propagation would surface analytical SEs on a bootstrap fit.
+        """
+        data = _by_path_data_with_trends_linear()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est_a = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, placebo=True
+            )
+            res_a = est_a.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+            est_b = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                placebo=True,
+                n_bootstrap=200,
+                seed=42,
+            )
+            res_b = est_b.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+        # Negative-horizon placebo rows must exist and carry bootstrap-
+        # derived inference. Verify by comparing analytical-only fit's
+        # SEs to bootstrap-fit's SEs on the same negative-horizon
+        # entries: bootstrap should differ (non-bit-identical) since
+        # the propagation block overwrites SE / p_value / conf_int.
+        assert res_b.path_placebo_event_study is not None
+        any_se_diff = False
+        any_finite = False
+        for path, lag_dict in res_b.path_placebo_event_study.items():
+            for lag_k, vals_b in lag_dict.items():
+                if not np.isfinite(vals_b["se"]):
+                    continue
+                any_finite = True
+                vals_a = res_a.path_placebo_event_study.get(path, {}).get(lag_k)
+                if vals_a is None or not np.isfinite(vals_a["se"]):
+                    continue
+                if abs(vals_b["se"] - vals_a["se"]) > 1e-10:
+                    any_se_diff = True
+                    break
+            if any_se_diff:
+                break
+        assert any_finite, "No finite negative-horizon bootstrap SEs surfaced"
+        assert any_se_diff, (
+            "Bootstrap fit produced bit-identical SEs to analytical fit on "
+            "every negative-horizon placebo cell; the placebo bootstrap "
+            "propagation block under trends_linear may not be running."
+        )
+
+    @pytest.mark.slow
+    def test_per_path_placebos_with_trends_linear_bootstrap_nan_consistent(self):
+        """``n_bootstrap=1`` produces NaN-consistent inference on
+        negative-horizon ``path_placebo_event_study`` rows under
+        ``by_path + trends_linear + placebo``. Pins the library-wide
+        NaN-on-invalid bootstrap contract on the new placebo path.
+        """
+        data = _by_path_data_with_trends_linear()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", (UserWarning, RuntimeWarning))
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                placebo=True,
+                n_bootstrap=1,
+                seed=42,
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+        assert res.path_placebo_event_study is not None
+        # n_bootstrap=1 → degenerate bootstrap distribution → NaN SE /
+        # p_value / conf_int on every negative-horizon entry.
+        for path, lag_dict in res.path_placebo_event_study.items():
+            for lag_k, vals in lag_dict.items():
+                assert not np.isfinite(vals["se"]), (
+                    f"path={path} lag={lag_k}: SE finite ({vals['se']}) "
+                    "under n_bootstrap=1; expected NaN"
+                )
+                assert not np.isfinite(vals["p_value"]), (
+                    f"path={path} lag={lag_k}: p_value finite under n_bootstrap=1"
+                )
+
+    @pytest.mark.slow
     def test_sup_t_bands_with_trends_linear_finite_crit(self):
         """Per-path joint sup-t bands populated under ``by_path +
         trends_linear + n_bootstrap > 0``. Pins the bootstrap-collector
@@ -7850,4 +7959,85 @@ class TestByPathTrendsNonparam:
         assert positive["cband_lower"].notna().any(), (
             "No positive-horizon cband rows populated under "
             "trends_nonparam + bootstrap"
+        )
+
+    @pytest.mark.slow
+    def test_per_path_placebos_with_trends_nonparam_bootstrap_inference(self):
+        """Bootstrap-derived inference fields populated on negative-
+        horizon ``path_placebo_event_study`` rows under ``by_path +
+        trends_nonparam + placebo + n_bootstrap > 0``.
+
+        Pins the ``set_ids`` threading into
+        ``_collect_path_placebo_bootstrap_inputs`` (line 5963 in the
+        diff): without that threading, the placebo bootstrap collector
+        would re-compute the per-group placebo IF with set_ids=None,
+        bypassing the set-restricted control pool. We verify by
+        comparing two bootstrap fits — one with trends_nonparam, one
+        without — and asserting at least one negative-horizon SE
+        differs (the set restriction must propagate through the
+        placebo bootstrap path) AND remains finite.
+        """
+        data = _by_path_data_with_trends_nonparam()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est_no_set = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                placebo=True,
+                n_bootstrap=200,
+                seed=42,
+            )
+            res_no = est_no_set.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                L_max=3,
+            )
+            est_set = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False,
+                by_path=3,
+                placebo=True,
+                n_bootstrap=200,
+                seed=42,
+            )
+            res_set = est_set.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_nonparam="state",
+                L_max=3,
+            )
+        assert res_set.path_placebo_event_study is not None
+        assert res_no.path_placebo_event_study is not None
+        any_diff = False
+        any_finite = False
+        for path, lag_dict in res_set.path_placebo_event_study.items():
+            for lag_k, vals_set in lag_dict.items():
+                if not np.isfinite(vals_set["se"]):
+                    continue
+                any_finite = True
+                vals_no = res_no.path_placebo_event_study.get(path, {}).get(
+                    lag_k
+                )
+                if vals_no is None or not np.isfinite(vals_no["se"]):
+                    continue
+                # Set restriction shrinks the control pool; with the
+                # same seed, the bootstrap distribution should differ.
+                if abs(vals_set["se"] - vals_no["se"]) > 1e-10:
+                    any_diff = True
+                    break
+            if any_diff:
+                break
+        assert any_finite, (
+            "No finite negative-horizon bootstrap SEs surfaced under "
+            "trends_nonparam + placebo + bootstrap"
+        )
+        assert any_diff, (
+            "Bootstrap placebo SEs are bit-identical with vs without "
+            "trends_nonparam restriction; set_ids may not be reaching "
+            "the per-path placebo bootstrap collector."
         )
