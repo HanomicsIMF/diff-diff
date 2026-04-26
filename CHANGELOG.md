@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Rust dependency upgrades**: bumped `rand` 0.8 → 0.10 and `rand_xoshiro` 0.6 → 0.8 in the Rust backend (the two crates are coupled through `rand_core` and must move together). MSRV bumped from Rust 1.84 → 1.85 to satisfy the new dependency requirements. Three call sites in `rust/src/bootstrap.rs` updated for the `rand 0.9` API rename: `gen::<bool>()` → `random::<bool>()`, `gen::<f64>()` → `random::<f64>()`, `gen_range(0..6)` → `random_range(0..6)`. **Webb wild bootstrap byte stream shifted** as a side effect: `rand 0.9` reworked the internal algorithm for `random_range` (improved rejection sampling), so `Xoshiro256PlusPlus::seed_from_u64(seed)` followed by `random_range(0..6)` consumes RNG bytes differently than the old `gen_range(0..6)` did. Distributional properties of Webb weights are unchanged (still uniform over the 6-point support); aggregate inference (SE, p-values, CI) converges to the same values for any reasonable `n_bootstrap`. Rademacher and Mammen byte streams are bit-identical to the prior release. Anyone with a saved Rust+Webb baseline pinning specific seeded results will see different numbers; the regression test suite uses within-build seed-reproducibility (not cross-version baselines) so all internal tests pass unchanged. New regression guard `TestRustBackend::test_bootstrap_weights_bit_identity_snapshot` pins fixed-seed weights for all three weight types, so any future RNG drift fails loudly with a localized error message.
+
 ## [3.3.1] - 2026-04-25
 
 ### Changed
