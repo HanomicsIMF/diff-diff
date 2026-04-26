@@ -4,6 +4,9 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   # Build wheels on Linux using manylinux containers
   build-linux:
