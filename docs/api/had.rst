@@ -129,11 +129,15 @@ HAD Pretests
 
 Diagnostic pretests for the HAD identification assumptions from de Chaisemartin
 et al. (2026). The composite orchestrator
-:func:`~diff_diff.did_had_pretest_workflow` dispatches to two shapes based on
-panel structure: the **overall** path (two-period first-differenced sample)
-runs single-period tests; the **event-study** path (three or more periods)
-runs joint multi-period tests. Both paths return a unified
-:class:`~diff_diff.HADPretestReport`.
+:func:`~diff_diff.did_had_pretest_workflow` is a diagnostic battery only - it
+does NOT pick the HAD design path (``continuous_at_zero`` /
+``continuous_near_d_lower`` / ``mass_point``); that is auto-detected inside
+:meth:`HeterogeneousAdoptionDiD.fit` from the dose support. The workflow has
+two explicit modes selected by the caller via the ``aggregate=`` kwarg:
+``aggregate="overall"`` (default, two-period first-differenced sample) runs
+single-period tests; ``aggregate="event_study"`` (multi-period panel with
+three or more periods) runs joint multi-period tests. Both modes return a
+unified :class:`~diff_diff.HADPretestReport`.
 
 .. autofunction:: diff_diff.did_had_pretest_workflow
 

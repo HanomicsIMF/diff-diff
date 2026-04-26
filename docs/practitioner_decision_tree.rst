@@ -284,8 +284,9 @@ identification rests on stronger structural assumptions (Design 1).
 
    from diff_diff import HeterogeneousAdoptionDiD, did_had_pretest_workflow
 
-   # Run the pretest workflow first - it adjudicates which design path
-   # your data supports and surfaces assumption violations
+   # Run the pretest battery first - it surfaces violations of the HAD
+   # identification assumptions (it does NOT pick the design path; the
+   # estimator does that internally from the dose support).
    pretests = did_had_pretest_workflow(
        data, outcome_col="y", unit_col="unit",
        time_col="period", dose_col="dose",

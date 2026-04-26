@@ -230,9 +230,10 @@ arXiv:2405.04465v6) and adds two surfaces beyond the QUG-focused R
 package: Design 1 (no QUG, ``d_lower > 0``, targets ``WAS_{d_lower}`` under
 Assumption 6 or sign-only under Assumption 5), and survey-design
 integration via Binder (1983) Taylor-series linearization (sampling weights
-+ optional strata / PSU / FPC). The pretest battery
-:func:`~diff_diff.did_had_pretest_workflow` adjudicates the design path
-and surfaces assumption violations.
++ optional strata / PSU / FPC). The diagnostic battery
+:func:`~diff_diff.did_had_pretest_workflow` surfaces violations of the HAD
+identification assumptions (the design path is auto-detected separately by
+:meth:`HeterogeneousAdoptionDiD.fit` from the dose support).
 
 .. code-block:: python
 
