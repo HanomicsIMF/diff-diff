@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.3.1] - 2026-04-25
 
 ### Changed
 - **HAD survey-design API consolidated to single `survey_design=` kwarg** across all 8 HAD surfaces: `HeterogeneousAdoptionDiD.fit`, `did_had_pretest_workflow`, `qug_test`, `stute_test`, `yatchew_hr_test`, `stute_joint_pretest`, `joint_pretrends_test`, `joint_homogeneity_test`. Matches the rest of the library (`ContinuousDiD`, `EfficientDiD`, `ChaisemartinDHaultfoeuille` already used `survey_design=`). On data-in surfaces (HAD.fit, workflow, joint data-in wrappers) `survey_design=` accepts a `SurveyDesign` instance (column references resolved against `data` at fit time, same convention as the rest of the library). On the three array-in linearity helpers (`stute_test`, `yatchew_hr_test`, `stute_joint_pretest`) `survey_design=` accepts a pre-resolved `ResolvedSurveyDesign`; passing a `SurveyDesign` raises `TypeError` with migration guidance to `make_pweight_design(arr)` (pweight-only) or pre-resolution. `qug_test` is the 8th surface and accepts the same kwarg signature for consistency, but **all** non-`None` values raise `NotImplementedError` per the Phase 4.5 C0 permanent deferral (no migration path; the qug-specific mutex error reflects this). New public helper `make_pweight_design(weights: np.ndarray) -> ResolvedSurveyDesign` exported from the `diff_diff` top level for the pweight-only convenience on the three array-in linearity helpers (formerly the private `survey._make_trivial_resolved`, kept as a permanent private alias); validates 1-D input at the front door. Three-way mutex (`survey_design + survey + weights`) extends the prior 2-way (`survey + weights`) — at most one may be non-None per call. Patch-level addition (additive new kwarg + permanent alias for the helper; no breaking changes this release).
@@ -1408,6 +1408,7 @@ for the full feature history leading to this release.
 [2.1.2]: https://github.com/igerber/diff-diff/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/igerber/diff-diff/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/igerber/diff-diff/compare/v2.0.3...v2.1.0
+[3.3.1]: https://github.com/igerber/diff-diff/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/igerber/diff-diff/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/igerber/diff-diff/compare/v3.1.3...v3.2.0
 [3.1.3]: https://github.com/igerber/diff-diff/compare/v3.1.2...v3.1.3
