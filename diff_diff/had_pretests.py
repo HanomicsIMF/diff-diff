@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -344,7 +344,10 @@ class YatchewTestResults:
     critical_value : float
         One-sided standard-normal critical value ``z_{1 - alpha}``.
     sigma2_lin : float
-        Residual variance from OLS of ``dy`` on ``d``.
+        Residual variance under the chosen null. Under
+        ``null_form="linearity"``: residual variance from OLS of ``dy``
+        on ``d``. Under ``null_form="mean_independence"``: ``(1/G) *
+        sum((dy - mean(dy))^2)``, the population variance of ``dy``.
     sigma2_diff : float
         Yatchew differencing variance
         ``(1 / (2G)) * sum((dy_{(g)} - dy_{(g-1)})^2)`` - divisor is ``2G``
@@ -354,6 +357,13 @@ class YatchewTestResults:
         ``sqrt((1 / (G-1)) * sum(eps_{(g)}^2 * eps_{(g-1)}^2))``.
     n_obs : int
         Number of observations.
+    null_form : str
+        ``"linearity"`` (default; H_0: ``E[dY|D]`` is linear in ``D``,
+        residuals from OLS ``dy ~ 1 + d``) or ``"mean_independence"``
+        (H_0: ``E[dY|D] = E[dY]``, residuals from intercept-only OLS
+        ``dy ~ 1``). Mirrors R ``YatchewTest::yatchew_test``'s
+        ``order`` argument (``order=1`` ↔ ``"linearity"``; ``order=0``
+        ↔ ``"mean_independence"``).
     """
 
     t_stat_hr: float
@@ -365,20 +375,26 @@ class YatchewTestResults:
     sigma2_diff: float
     sigma2_W: float
     n_obs: int
+    null_form: str = "linearity"
 
     def __repr__(self) -> str:
         return (
             f"YatchewTestResults(t_stat_hr={self.t_stat_hr:.4f}, "
             f"p_value={self.p_value:.4f}, reject={self.reject}, "
-            f"alpha={self.alpha}, n_obs={self.n_obs})"
+            f"alpha={self.alpha}, null_form={self.null_form!r}, "
+            f"n_obs={self.n_obs})"
         )
 
     def summary(self) -> str:
         """Formatted summary table."""
         width = 64
+        title = {
+            "linearity": "Yatchew-HR linearity test (H_0: linear E[dY|D])",
+            "mean_independence": ("Yatchew-HR mean-independence test (H_0: E[dY|D] = E[dY])"),
+        }.get(self.null_form, f"Yatchew-HR test (null_form={self.null_form!r})")
         lines = [
             "=" * width,
-            "Yatchew-HR linearity test (H_0: linear E[dY|D])".center(width),
+            title.center(width),
             "=" * width,
             f"{'T_hr statistic:':<30} {self.t_stat_hr:>20.4f}",
             f"{'p-value:':<30} {self.p_value:>20.4f}",
@@ -410,6 +426,7 @@ class YatchewTestResults:
             "sigma2_diff": _json_safe_scalar(self.sigma2_diff),
             "sigma2_W": _json_safe_scalar(self.sigma2_W),
             "n_obs": int(self.n_obs),
+            "null_form": str(self.null_form),
         }
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -994,6 +1011,43 @@ def _fit_weighted_ols_intercept_slope(
     a_hat = float(dy_wmean - b_hat * d_wmean)
     residuals = dy - a_hat - b_hat * d
     return a_hat, b_hat, residuals
+
+
+def _fit_ols_intercept_only(dy: np.ndarray) -> "tuple[float, float, np.ndarray]":
+    """Fit ``dy = a + eps`` (intercept-only OLS, mean-independence null).
+
+    Returns ``(a_hat, 0.0, residuals)`` where ``a_hat = mean(dy)`` and
+    ``residuals = dy - a_hat`` in the ORIGINAL input order. Slope
+    ``b_hat = 0.0`` is returned for tuple-symmetry with
+    :func:`_fit_ols_intercept_slope`; the downstream Yatchew variance code
+    consumes only ``residuals``.
+
+    Mirrors R ``YatchewTest::yatchew_test(order=0)``.
+    """
+    a_hat = float(np.mean(dy))
+    residuals = dy - a_hat
+    return a_hat, 0.0, residuals
+
+
+def _fit_weighted_ols_intercept_only(
+    dy: np.ndarray, w: np.ndarray
+) -> "tuple[float, float, np.ndarray]":
+    """Weighted intercept-only OLS analog of :func:`_fit_ols_intercept_only`.
+
+    Returns ``(a_hat, 0.0, residuals)`` where ``a_hat = sum(w * dy) / sum(w)``
+    (the weighted mean) and ``residuals = dy - a_hat`` in the ORIGINAL input
+    order on the un-weighted scale. At ``w = ones(G)`` reduces bit-exactly
+    to :func:`_fit_ols_intercept_only`.
+    """
+    sw = float(np.sum(w))
+    if sw <= 0.0:
+        raise ValueError(
+            f"_fit_weighted_ols_intercept_only: sum(w) = {sw} <= 0; "
+            "weighted OLS requires positive total mass."
+        )
+    a_hat = float(np.sum(w * dy) / sw)
+    residuals = dy - a_hat
+    return a_hat, 0.0, residuals
 
 
 def _cvm_statistic(eps_sorted: np.ndarray, d_sorted: np.ndarray) -> float:
@@ -1956,25 +2010,32 @@ def yatchew_hr_test(
     dy: np.ndarray,
     alpha: float = 0.05,
     *,
+    null: Literal["linearity", "mean_independence"] = "linearity",
     survey_design: Any = None,
     survey: Any = None,
     weights: Optional[np.ndarray] = None,
 ) -> YatchewTestResults:
-    """Run the Yatchew heteroskedasticity-robust linearity test.
+    """Run the Yatchew heteroskedasticity-robust specification test.
 
-    Tests ``H_0: E[ΔY | D_2]`` is linear in ``D_2`` (paper Assumption 8,
-    Theorem 7) via the variance-ratio statistic
+    Tests one of two nulls (selected via ``null=``) using the
+    variance-ratio statistic
 
         T_hr = sqrt(G) * (sigma2_lin - sigma2_diff) / sigma2_W
 
     where
 
-        sigma2_lin   = (1/G) * sum(eps^2)                        # OLS residuals
+        sigma2_lin   = (1/G) * sum(eps^2)                        # residuals under chosen null
         sigma2_diff  = (1/(2G)) * sum((dy_{(g)} - dy_{(g-1)})^2) # Yatchew differencing
         sigma2_W     = sqrt((1/(G-1)) * sum(eps_{(g)}^2 * eps_{(g-1)}^2))
 
-    and ``_{(g)}`` denotes sort by ``d``. Rejection uses the one-sided
-    standard-normal critical value ``z_{1-alpha}``.
+    and ``_{(g)}`` denotes sort by ``d``. Under ``null="linearity"``
+    (default, paper Assumption 8 / Theorem 7) ``eps`` are residuals from
+    OLS ``dy = a + b*d + eps``. Under ``null="mean_independence"`` ``eps
+    = dy - mean(dy)`` (intercept-only OLS), mirroring R
+    ``YatchewTest::yatchew_test(order=0)``. The ``sigma2_diff`` and
+    ``sigma2_W`` formulas are identical between the two modes -
+    the only delta is the residual definition. Rejection uses the
+    one-sided standard-normal critical value ``z_{1-alpha}``.
 
     Parameters
     ----------
@@ -1982,6 +2043,24 @@ def yatchew_hr_test(
         Dose and first-difference outcome vectors.
     alpha : float, default 0.05
         One-sided significance level.
+    null : {"linearity", "mean_independence"}, keyword-only, default "linearity"
+        Which null hypothesis the test targets:
+
+        - ``"linearity"`` (default): H_0 ``E[dY | D]`` is linear in ``D``
+          (paper Assumption 8, Theorem 7). Residuals come from OLS
+          ``dy = a + b*d + eps``. Bit-exact backcompat with pre-PR calls.
+        - ``"mean_independence"``: H_0 ``E[dY | D] = E[dY]`` (mean
+          independence of ``dY`` from ``D``). Residuals come from
+          intercept-only OLS ``dy = a + eps``, so
+          ``eps = dy - mean(dy)``. Mirrors R
+          ``YatchewTest::yatchew_test(order=0)``. Used by the
+          R-parity test on placebo Yatchew rows
+          (``Credible-Answers/did_had`` runs ``order=0`` on placebos
+          to test pre-trends as a non-parametric mean-independence
+          assertion).
+
+        ``d`` is required under both modes (the sort-by-``d``
+        differencing step is null-agnostic).
     survey_design : ResolvedSurveyDesign or None, keyword-only, default None
         Already-resolved survey design (per-unit). Array-in helpers accept
         ``ResolvedSurveyDesign`` ONLY; passing a ``SurveyDesign`` raises
@@ -2093,6 +2172,12 @@ def yatchew_hr_test(
     """
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must satisfy 0 < alpha < 1, got {alpha}.")
+
+    if null not in ("linearity", "mean_independence"):
+        raise ValueError(
+            f"yatchew_hr_test: null must be one of "
+            f"('linearity', 'mean_independence'), got {null!r}."
+        )
 
     # Three-way mutex on survey_design / survey / weights (array-in pattern).
     n_set = sum(x is not None for x in (survey_design, survey, weights))
@@ -2225,6 +2310,7 @@ def yatchew_hr_test(
             sigma2_diff=float("nan"),
             sigma2_W=float("nan"),
             n_obs=G,
+            null_form=null,
         )
 
     # Tie / constant-dose front-door guard. Yatchew's difference-based
@@ -2258,16 +2344,28 @@ def yatchew_hr_test(
             sigma2_diff=float("nan"),
             sigma2_W=float("nan"),
             n_obs=G,
+            null_form=null,
         )
 
-    # Phase 4.5 C: weighted vs unweighted OLS dispatch. Unweighted path is
-    # bit-exact pre-PR (stability invariant #1).
+    # 4-arm dispatch on (null, weighted). Unweighted-linearity path is
+    # bit-exact pre-PR (stability invariant #1). Mean-independence mode
+    # mirrors R YatchewTest::yatchew_test(order=0) and uses intercept-only
+    # OLS residuals; the downstream sigma2_diff / sigma2_W path is
+    # identical across nulls.
+    if null == "linearity":
+        if w_arr is None:
+            _, _, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
+        else:
+            _, _, eps = _fit_weighted_ols_intercept_slope(d_arr, dy_arr, w_arr)
+    else:  # null == "mean_independence"
+        if w_arr is None:
+            _, _, eps = _fit_ols_intercept_only(dy_arr)
+        else:
+            _, _, eps = _fit_weighted_ols_intercept_only(dy_arr, w_arr)
     if w_arr is None:
-        _, _, eps = _fit_ols_intercept_slope(d_arr, dy_arr)
         sigma2_lin = float(np.mean(eps * eps))
         sum_w = float(G)  # uniform-weights effective sample size = G
     else:
-        _, _, eps = _fit_weighted_ols_intercept_slope(d_arr, dy_arr, w_arr)
         sum_w = float(np.sum(w_arr))
         sigma2_lin = float(np.sum(w_arr * eps * eps) / sum_w)
 
@@ -2307,6 +2405,7 @@ def yatchew_hr_test(
             sigma2_diff=sigma2_diff_exact,
             sigma2_W=0.0,
             n_obs=G,
+            null_form=null,
         )
 
     idx = np.argsort(d_arr, kind="stable")
@@ -2375,6 +2474,7 @@ def yatchew_hr_test(
             sigma2_diff=sigma2_diff,
             sigma2_W=0.0,
             n_obs=G,
+            null_form=null,
         )
     sigma2_W = float(np.sqrt(sigma4_W))
 
@@ -2394,6 +2494,7 @@ def yatchew_hr_test(
         sigma2_diff=sigma2_diff,
         sigma2_W=sigma2_W,
         n_obs=G,
+        null_form=null,
     )
 
 
@@ -4791,6 +4892,9 @@ def did_had_pretest_workflow(
         seed=seed,
         survey_design=per_test_survey_design,
     )
+    # Linearity null is correct for the workflow's post-treatment Yatchew step
+    # (paper Theorem 7); placebo mean-independence routing lives in the
+    # R-parity test, not the workflow.
     yatchew_res = yatchew_hr_test(
         d_arr,
         dy_arr,
