@@ -7220,6 +7220,104 @@ class TestByPathTrendsLinear:
                     f"path={path} l={l_h}: bootstrap SE not finite"
                 )
 
+    @pytest.mark.slow
+    def test_bootstrap_cumulated_uses_post_bootstrap_per_horizon_se(self):
+        """Cumulated SE under bootstrap equals running sum of bootstrap per-horizon SEs.
+
+        Regression for the post-bootstrap propagation invariant: the
+        per-path cumulated layer must be derived from the FINAL post-
+        bootstrap per-horizon SEs, not the analytical SEs that
+        path_effects was initially populated with. Mirrors the global
+        `linear_trends_effects` post-bootstrap recomputation contract.
+        """
+        data = _by_path_data_with_trends_linear()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, n_bootstrap=200, seed=42
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+        # Sanity: bootstrap path produced the cumulated layer.
+        assert res.path_cumulated_event_study is not None
+        for path, cum in res.path_cumulated_event_study.items():
+            horizons = res.path_effects[path]["horizons"]
+            running = 0.0
+            for l_h in (1, 2, 3):
+                bs_se = horizons[l_h]["se"]
+                assert np.isfinite(bs_se), (
+                    f"path={path} l={l_h}: bootstrap SE not finite "
+                    "(precondition for cumulated assertion)"
+                )
+                running += bs_se
+                np.testing.assert_allclose(
+                    cum[l_h]["se"],
+                    running,
+                    rtol=1e-12,
+                    err_msg=(
+                        f"path={path} l={l_h}: cumulated SE not equal "
+                        f"to running sum of post-bootstrap per-horizon SEs "
+                        f"(cum_se={cum[l_h]['se']:.6f}, "
+                        f"sum_bs_se={running:.6f}). The cumulated layer "
+                        "must be recomputed AFTER bootstrap propagation."
+                    ),
+                )
+
+    @pytest.mark.slow
+    def test_bootstrap_cumulated_nan_consistent_when_n_bootstrap_one(self):
+        """n_bootstrap=1: bootstrap SE non-finite → cumulated SE/t/p/CI NaN.
+
+        Locks the library-wide NaN-on-invalid bootstrap contract on the
+        new `path_cumulated_event_study` surface. With n_bootstrap=1 the
+        bootstrap SE is degenerate (computed from a single draw); the
+        bootstrap propagation block writes NaN to the per-horizon SE,
+        and the cumulated layer's running-sum SE must be NaN-consistent
+        rather than retaining the analytical value.
+        """
+        data = _by_path_data_with_trends_linear()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", (UserWarning, RuntimeWarning))
+            est = ChaisemartinDHaultfoeuille(
+                drop_larger_lower=False, by_path=3, n_bootstrap=1, seed=42
+            )
+            res = est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+        assert res.path_cumulated_event_study is not None
+        # n_bootstrap=1 should produce NaN per-horizon SEs (degenerate
+        # bootstrap distribution); the cumulated layer must propagate
+        # NaN through SE / t_stat / p_value / conf_int.
+        for path, cum in res.path_cumulated_event_study.items():
+            for l_h, vals in cum.items():
+                assert not np.isfinite(vals["se"]), (
+                    f"path={path} l={l_h}: cumulated SE finite "
+                    f"({vals['se']}) under n_bootstrap=1; expected NaN per "
+                    "the NaN-on-invalid bootstrap contract"
+                )
+                assert not np.isfinite(vals["t_stat"]), (
+                    f"path={path} l={l_h}: cumulated t_stat not NaN"
+                )
+                assert not np.isfinite(vals["p_value"]), (
+                    f"path={path} l={l_h}: cumulated p_value not NaN"
+                )
+                ci_lo, ci_hi = vals["conf_int"]
+                assert not (np.isfinite(ci_lo) and np.isfinite(ci_hi)), (
+                    f"path={path} l={l_h}: cumulated conf_int not NaN"
+                )
+
 
 class TestByPathTrendsNonparam:
     """Wave 3 #7: ``by_path`` + ``trends_nonparam`` (state-set trends).

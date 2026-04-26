@@ -2102,28 +2102,13 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 df_inference=_inference_df(_df_s_bp, resolved_survey),
                 set_ids=set_ids_arr,
             )
-            # Per-path cumulated layer mirrors the global
-            # linear_trends_effects cumulation when trends_linear=True.
-            # path_effects[path]["horizons"][l] surfaces raw DID^{fd}_l;
-            # path_cumulated_event_study[path][l] surfaces the level
-            # effect delta_l = sum_{l'=1..l} DID^{fd}_{path, l'}.
-            if (
-                _is_trends_linear
-                and path_effects is not None
-                and len(path_effects) > 0
-            ):
-                path_cumulated_event_study = _compute_path_cumulated_event_study(
-                    D_mat=D_mat,
-                    N_mat=N_mat,
-                    first_switch_idx=first_switch_idx_arr,
-                    switch_direction=switch_direction_arr,
-                    L_max=L_max,
-                    by_path=self.by_path,
-                    multi_horizon_dids=multi_horizon_dids,
-                    path_effects=path_effects,
-                    alpha=self.alpha,
-                    df_inference=_inference_df(_df_s_bp, resolved_survey),
-                )
+            # NOTE: per-path cumulated layer is computed AFTER the
+            # bootstrap propagation block below (search for
+            # `path_cumulated_event_study =`) so it reads the final
+            # post-bootstrap per-horizon SEs rather than the analytical
+            # ones that path_effects was just populated with. This
+            # mirrors the global `linear_trends_effects` cumulation
+            # which also runs after the event_study bootstrap propagation.
 
         # Phase 2: placebos, normalized effects, cost-benefit delta
         multi_horizon_placebos: Optional[Dict[int, Dict[str, Any]]] = None
@@ -3094,6 +3079,42 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             np.nan,
                         )
                         path_effects[path_key]["horizons"][l_h]["t_stat"] = np.nan
+
+        # Per-path cumulated layer (under trends_linear). Computed AFTER
+        # the bootstrap propagation block above so the cumulated SE / t /
+        # p / CI are derived from the FINAL post-bootstrap per-horizon
+        # path SEs rather than the analytical ones path_effects was
+        # initially populated with at fit-time. Mirrors the global
+        # `linear_trends_effects` placement at `:3405-3454` which also
+        # runs after the event_study bootstrap propagation. Honors the
+        # library-wide NaN-on-invalid bootstrap contract: any non-finite
+        # component SE in the running-sum upper bound yields a NaN
+        # cumulated SE / t / p / CI, regardless of whether the source
+        # was an analytical singularity or a non-finite bootstrap draw.
+        if (
+            self.by_path is not None
+            and _is_trends_linear
+            and L_max is not None
+            and L_max >= 1
+            and multi_horizon_dids is not None
+            and path_effects is not None
+            and len(path_effects) > 0
+        ):
+            _df_s_bp_cum = _effective_df_survey(
+                resolved_survey, _replicate_n_valid_list
+            )
+            path_cumulated_event_study = _compute_path_cumulated_event_study(
+                D_mat=D_mat,
+                N_mat=N_mat,
+                first_switch_idx=first_switch_idx_arr,
+                switch_direction=switch_direction_arr,
+                L_max=L_max,
+                by_path=self.by_path,
+                multi_horizon_dids=multi_horizon_dids,
+                path_effects=path_effects,
+                alpha=self.alpha,
+                df_inference=_inference_df(_df_s_bp_cum, resolved_survey),
+            )
 
         # Phase 3: propagate bootstrap results to per-path placebos
         # (by_path + placebo). Sibling of the path_effects propagation
