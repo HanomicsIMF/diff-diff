@@ -141,11 +141,13 @@ class TestRustBackend:
         }
         for weight_type, expected_arr in expected.items():
             actual = generate_bootstrap_weights_batch(2, 4, weight_type, 42)
-            np.testing.assert_allclose(
+            # Strict bit-identity: the snapshot values are either exact
+            # (Rademacher = +/-1.0) or computed once via correctly-rounded
+            # IEEE 754 sqrt in Rust (Mammen, Webb), so cross-platform
+            # bit-equality holds on conformant hardware.
+            np.testing.assert_array_equal(
                 actual,
                 expected_arr,
-                atol=1e-14,
-                rtol=1e-14,
                 err_msg=f"{weight_type} bootstrap weights drifted from pinned baseline",
             )
 
