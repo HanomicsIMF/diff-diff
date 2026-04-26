@@ -155,14 +155,18 @@ jobs:
       - name: Run tests with Rust backend (Unix)
         if: runner.os != 'Windows'
         working-directory: /tmp
-        run: DIFF_DIFF_BACKEND=rust pytest tests/ -q -n auto --dist worksteal -m ''
+        # Doc snippet tests own .github/workflows/docs-tests.yml; ignore
+        # them here to keep one workflow per surface and avoid double
+        # execution (the matrix copies tests/ to /tmp/tests without
+        # docs/, so this ignore is defensive on the Rust path).
+        run: DIFF_DIFF_BACKEND=rust pytest tests/ --ignore=tests/test_doc_snippets.py -q -n auto --dist worksteal -m ''
 
       - name: Run tests with Rust backend (Windows)
         if: runner.os == 'Windows'
         working-directory: ${{ runner.temp }}
         run: |
           $env:DIFF_DIFF_BACKEND="rust"
-          pytest tests/ -q -n auto --dist worksteal -m ''
+          pytest tests/ --ignore=tests/test_doc_snippets.py -q -n auto --dist worksteal -m ''
         shell: pwsh
 
   # Test pure Python fallback (without Rust extension)
@@ -190,4 +194,8 @@ jobs:
           PYTHONPATH=. python -c "from diff_diff import HAS_RUST_BACKEND; print(f'HAS_RUST_BACKEND: {HAS_RUST_BACKEND}'); assert not HAS_RUST_BACKEND"
 
       - name: Run tests in pure Python mode
-        run: PYTHONPATH=. DIFF_DIFF_BACKEND=python pytest tests/ -q --ignore=tests/test_rust_backend.py -n auto --dist worksteal
+        # Doc snippet tests own .github/workflows/docs-tests.yml; ignore
+        # them here to keep one workflow per surface (this is the only
+        # invocation that actually executes test_doc_snippets.py since
+        # this job runs from the repo root, not /tmp/tests).
+        run: PYTHONPATH=. DIFF_DIFF_BACKEND=python pytest tests/ -q --ignore=tests/test_rust_backend.py --ignore=tests/test_doc_snippets.py -n auto --dist worksteal
