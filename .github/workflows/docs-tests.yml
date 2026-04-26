@@ -7,6 +7,11 @@ on:
       - 'docs/**'
       - 'diff_diff/**'
       - 'tests/test_doc_snippets.py'
+      # tests/conftest.py is auto-loaded by pytest for the snippet
+      # test run and mutates sys.path + MPLBACKEND (conftest.py:14, 18);
+      # changes there can break snippet exec without touching the test
+      # file itself.
+      - 'tests/conftest.py'
       - 'pyproject.toml'
       - '.github/workflows/docs-tests.yml'
   pull_request:
@@ -16,6 +21,7 @@ on:
       - 'docs/**'
       - 'diff_diff/**'
       - 'tests/test_doc_snippets.py'
+      - 'tests/conftest.py'
       - 'pyproject.toml'
       - '.github/workflows/docs-tests.yml'
   schedule:
