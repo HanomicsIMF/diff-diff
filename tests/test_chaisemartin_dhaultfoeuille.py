@@ -7600,6 +7600,65 @@ class TestByPathTrendsLinear:
             f"single-baseline panel: {deviation_msgs}"
         )
 
+    def test_F_g_three_boundary_case_emits_warning(self):
+        """When ``by_path + trends_linear`` is fit on a panel that
+        includes ``F_g=3`` switchers, the estimator must emit a
+        targeted ``UserWarning`` documenting the boundary-case
+        divergence from R. Locks the warning predicate
+        (``first_switch_idx_arr == 2``) on a fixture that includes
+        F_g=3 + F_g=4 switchers.
+        """
+        # 4 F_g=3 switchers (path 0,0,1,1,1,1,1,1) + 4 F_g=4
+        # switchers (path 0,0,0,1,1,1,1,1) + 5 never-treated +
+        # 5 always-treated controls. n_periods=8, all
+        # single-baseline (D_{g,1}=0) so the multi-baseline warning
+        # does NOT fire — only the new F_g=3 boundary warning.
+        rng = np.random.default_rng(13)
+        rows = []
+
+        def _add(group, treatment_path):
+            for t, d in enumerate(treatment_path):
+                y = d * 2.0 + 0.05 * group + rng.normal(0, 0.1)
+                rows.append(
+                    {"group": group, "period": t, "treatment": d, "outcome": y}
+                )
+
+        for g in (1, 2, 3, 4):
+            _add(g, [0, 0, 1, 1, 1, 1, 1, 1])  # F_g=3 path
+        for g in (5, 6, 7, 8):
+            _add(g, [0, 0, 0, 1, 1, 1, 1, 1])  # F_g=4 path
+        for g in (9, 10, 11, 12, 13):
+            _add(g, [1, 1, 1, 1, 1, 1, 1, 1])
+        for g in (14, 15, 16, 17, 18):
+            _add(g, [0, 0, 0, 0, 0, 0, 0, 0])
+        data = pd.DataFrame(rows)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            est = ChaisemartinDHaultfoeuille(drop_larger_lower=False, by_path=2)
+            est.fit(
+                data,
+                outcome="outcome",
+                group="group",
+                time="period",
+                treatment="treatment",
+                trends_linear=True,
+                L_max=3,
+            )
+
+        boundary_msgs = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, UserWarning)
+            and "by_path + trends_linear" in str(w.message)
+            and "F_g=3" in str(w.message)
+        ]
+        assert boundary_msgs, (
+            "Expected a UserWarning naming 'by_path + trends_linear' "
+            "and 'F_g=3' on a panel that includes F_g=3 switchers. "
+            f"Captured warnings: {[str(w.message) for w in caught]}"
+        )
+
     def test_single_baseline_heterogeneous_F_g_does_not_warn(self):
         """Single-baseline switcher panel with HETEROGENEOUS ``F_g``
         across paths must NOT trigger the multi-baseline trends_linear

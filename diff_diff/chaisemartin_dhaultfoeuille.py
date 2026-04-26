@@ -458,10 +458,21 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         ``path_effects`` (the existing global ``F_g < 3`` warning
         still fires). Per-path R parity matches R
         ``did_multiplegt_dyn(..., by_path, trends_lin)`` on per-path
-        cumulated point estimates under single-baseline panels (R
-        re-runs the per-path full pipeline on each path's restricted
-        subsample; same multi-baseline divergence pattern as
-        ``controls``). **Placebo under trends_linear returns RAW
+        cumulated point estimates under single-baseline panels with
+        sufficient pre-window depth (``F_g >= 4`` for every selected-
+        path switcher). R re-runs the per-path full pipeline on each
+        path's restricted subsample; same multi-baseline divergence
+        pattern as ``controls`` (a ``UserWarning`` fires when switcher
+        baselines take multiple values). **F_g=3 boundary-case
+        divergence:** `F_g=3` switchers have only 1 valid pre-window
+        Z value after first-differencing and the ``time==1`` filter,
+        which causes Python's global-then-disaggregate architecture
+        to diverge from R's per-path full-pipeline call (30%+ on
+        point estimates observed empirically). A separate
+        ``UserWarning`` fires at fit-time when the panel includes any
+        `F_g=3` switchers and `by_path + trends_linear` is set, so
+        practitioners hitting this boundary regime see the divergence
+        flag explicitly. **Placebo under trends_linear returns RAW
         per-horizon values, not cumulated** -- there is no per-path
         placebo cumulation surface (verified empirically against R
         via the existing ``joiners_only_trends_lin`` parity scenario).
@@ -1689,6 +1700,44 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                             UserWarning,
                             stacklevel=2,
                         )
+                # F_g=3 boundary-case divergence (`by_path + trends_linear`).
+                # `F_g=3` switchers have exactly 2 pre-switch periods,
+                # which after trends_linear's first-difference and
+                # `time != 1` filter leaves only 1 valid pre-window Z
+                # value. R re-runs the full pipeline on each path's
+                # restricted subsample (path's switchers + same-baseline
+                # yet-to-treat controls), and this single-pre-period
+                # regime triggers different control-eligibility
+                # treatment in R's per-path call than Python's global-
+                # then-disaggregate architecture. Empirically observed
+                # 30-165% rel diff on path 1 of the parity fixture's
+                # earlier `F_g=3` variant; the shipped parity scenario
+                # uses `F_g >= 4` exclusively. Fire a targeted warning
+                # whenever the panel contains any `F_g=3` switchers AND
+                # `by_path` is requested, so practitioners hitting this
+                # boundary regime see the divergence flag explicitly.
+                _f_g_three_count = int((first_switch_idx_arr == 2).sum())
+                if _f_g_three_count > 0:
+                    warnings.warn(
+                        f"by_path + trends_linear: {_f_g_three_count} "
+                        f"switching group(s) have F_g=3 (exactly 2 "
+                        f"pre-switch periods). After first-differencing "
+                        f"and the time==1 filter, these groups have "
+                        f"only 1 valid pre-window Z value, which "
+                        f"triggers a documented boundary-case "
+                        f"divergence between Python's global-then-"
+                        f"disaggregate architecture and R's per-path "
+                        f"full-pipeline call. Per-path point estimates "
+                        f"on paths whose switchers include F_g=3 can "
+                        f"diverge from `did_multiplegt_dyn(..., "
+                        f"by_path, trends_lin)` by 30%+ on point "
+                        f"estimates. See `docs/methodology/REGISTRY.md` "
+                        f"(`Note (Phase 3 by_path ...)` -> Per-path "
+                        f"linear-trends DID^{{fd}}) for the full "
+                        f"deviation contract.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
             N_mat_orig = N_mat.copy()
             Y_mat, N_mat = _compute_first_differenced_matrix(Y_mat, N_mat)
 
