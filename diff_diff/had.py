@@ -76,7 +76,13 @@ from diff_diff.local_linear import (
     BiasCorrectedFit,
     bias_corrected_local_linear,
 )
-from diff_diff.survey import SurveyMetadata, compute_survey_metadata
+from diff_diff.survey import (
+    HAD_DEPRECATION_MSG_SURVEY_KWARG,
+    HAD_DEPRECATION_MSG_WEIGHTS_KWARG_HAD_FIT,
+    HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN,
+    SurveyMetadata,
+    compute_survey_metadata,
+)
 from diff_diff.utils import safe_inference
 
 __all__ = [
@@ -695,10 +701,13 @@ class HeterogeneousAdoptionDiDEventStudyResults:
     # fits stay unchanged; all None on unweighted fits).
     variance_formula: Optional[str] = None
     """Per-horizon variance family label (applied uniformly across all
-    horizons in the fit). One of ``"pweight"`` / ``"pweight_2sls"``
-    (weights= shortcut; continuous / mass-point), ``"survey_binder_tsl"``
-    / ``"survey_binder_tsl_2sls"`` (survey= path), or ``None`` on
-    unweighted fits. Mirrors the static-path ``variance_formula`` field."""
+    horizons in the fit). One of ``"pweight"`` / ``"pweight_2sls"`` (when
+    a per-row weight array was supplied, including via the deprecated
+    ``weights=`` alias; continuous / mass-point), ``"survey_binder_tsl"``
+    / ``"survey_binder_tsl_2sls"`` (when a SurveyDesign was supplied via
+    ``survey_design=`` or the deprecated ``survey=`` alias), or ``None``
+    on unweighted fits. Mirrors the static-path ``variance_formula``
+    field."""
     effective_dose_mean: Optional[float] = None
     """Weighted denominator used by the β̂-scale rescaling. For continuous
     designs: weighted ``sum(w · d)/sum(w)`` (continuous_at_zero) or
@@ -2783,9 +2792,15 @@ class HeterogeneousAdoptionDiD:
         unit_col: str,
         first_treat_col: Optional[str] = None,
         aggregate: str = "overall",
+        # PR #376 R4 P1: preserve pre-PR positional-or-keyword status of
+        # `survey`, `weights`, `cband` for back-compat with positional
+        # callers. `survey_design=` is the only new addition and is
+        # keyword-only.
         survey: Any = None,
         weights: Optional[np.ndarray] = None,
         cband: bool = True,
+        *,
+        survey_design: Any = None,
     ) -> HeterogeneousAdoptionDiDResults:
         """Fit the HAD estimator.
 
@@ -2835,66 +2850,123 @@ class HeterogeneousAdoptionDiD:
             CIs per horizon; joint cross-horizon covariance is deferred
             to a follow-up PR. Staggered-timing panels are auto-filtered
             to the last-treatment cohort with a ``UserWarning``.
-        survey : SurveyDesign or None
+        survey_design : SurveyDesign or None, keyword-only
             Survey design (sampling weights + optional strata / PSU / FPC)
-            for design-based inference on the two continuous-dose paths
-            (``continuous_at_zero``, ``continuous_near_d_lower``). Passes
-            through :func:`compute_survey_if_variance` (Binder 1983 TSL)
-            for the SE; weights propagate pointwise into the lprobust
-            kernel composition. Only ``weight_type="pweight"`` is
-            supported in Phase 4.5 A — ``aweight`` / ``fweight`` raise
-            ``NotImplementedError``. Survey design columns (strata / PSU /
-            FPC) must be constant within unit (sampling-unit-level
-            assignment); within-unit variance raises ``ValueError``.
-            Replicate-weight designs raise ``NotImplementedError``
-            (Phase 4.5 C). Phase 4.5 B support matrix: survey / weights
-            are now accepted on ALL design × aggregate combinations
-            (continuous × {overall, event-study}, mass-point × {overall,
-            event-study}); HAD pretests (``qug_test``, ``stute_test``,
-            ``yatchew_hr_test``, joint variants,
-            ``did_had_pretest_workflow``) still don't accept
-            survey/weights — deferred to Phase 4.5 C / C0.
+            for design-based inference. Supported on ALL design × aggregate
+            combinations after Phase 4.5 B: continuous paths
+            (``continuous_at_zero``, ``continuous_near_d_lower``) on both
+            ``aggregate="overall"`` and ``aggregate="event_study"``, AND
+            the ``mass_point`` design on both aggregates. Continuous paths
+            compose the SE via :func:`compute_survey_if_variance` (Binder
+            1983 TSL); weights propagate pointwise into the lprobust
+            kernel. Mass-point composes the per-unit 2SLS IF on the
+            HC1-scale and Binder-TSL-aggregates that — requires
+            ``vcov_type='hc1'`` (the classical default raises
+            ``NotImplementedError`` on the survey path). Event-study fits
+            with ``cband=True`` add a multiplier-bootstrap simultaneous
+            confidence band. Only ``weight_type="pweight"`` is supported
+            (``aweight`` / ``fweight`` raise ``NotImplementedError``).
+            Survey design columns (strata / PSU / FPC) must be constant
+            within unit (sampling-unit-level assignment); within-unit
+            variance raises ``ValueError``. Replicate-weight designs raise
+            ``NotImplementedError``. Mutually exclusive with the deprecated
+            ``survey=`` and ``weights=`` aliases. See
+            ``docs/methodology/REGISTRY.md`` § HeterogeneousAdoptionDiD —
+            "Note (HAD survey-design API consolidation)" for the full
+            dispatch matrix.
+        survey : SurveyDesign or None
+            DEPRECATED alias of ``survey_design=``. Remains positional-or-
+            keyword for one minor cycle to preserve pre-PR call shapes;
+            will be removed in the next minor release. Prefer
+            ``survey_design=``.
         weights : np.ndarray or None
-            Per-row sampling weights as a lightweight shortcut equivalent
-            to ``survey=SurveyDesign(weights=<col>)``. Produces the same
-            ATT; the SE uses the analytical weighted HC1 sandwich
-            (continuous: CCT-2014 weighted-robust; mass-point: pweight
-            2SLS sandwich) rather than Binder-TSL. Must be constant
-            within each unit; row-order aligned with ``data`` (index
-            labels are resolved to positional offsets via
-            ``data.index.get_indexer``, so custom non-RangeIndex inputs
-            work as long as ``data.index`` is unique). Mutually
-            exclusive with ``survey=`` — passing both raises
-            ``ValueError``.
+            DEPRECATED alias for the per-row pweight shortcut. Remains
+            positional-or-keyword for one minor cycle. Prefer adding the
+            weights as a column on ``data`` and passing
+            ``survey_design=SurveyDesign(weights='col_name')`` instead.
+            Will be removed in the next minor release. Currently
+            preserved as the analytical-HC1-sandwich shortcut (continuous:
+            CCT-2014 weighted-robust; mass-point: pweight 2SLS sandwich)
+            with the per-row → per-unit aggregation invariant intact.
+            Mutually exclusive with ``survey_design=`` and ``survey=``.
         cband : bool, default True
             Phase 4.5 B: controls the multiplier-bootstrap simultaneous
             confidence band on the weighted event-study path. When
-            ``True`` (default) and ``aggregate="event_study"`` AND
-            ``weights=`` or ``survey=`` is supplied, the fit populates
-            ``cband_low`` / ``cband_high`` / ``cband_crit_value`` /
-            ``cband_method`` / ``cband_n_bootstrap`` on the result. When
-            ``False`` those fields stay ``None``. No effect on
-            ``aggregate="overall"`` or on unweighted event-study.
-            ``n_bootstrap`` and ``seed`` (constructor params) control
-            replicate count and RNG; defaults are 999 / ``None``.
+            ``True`` (default) and ``aggregate="event_study"`` AND any of
+            ``survey_design=`` / ``survey=`` / ``weights=`` is supplied,
+            the fit populates ``cband_low`` / ``cband_high`` /
+            ``cband_crit_value`` / ``cband_method`` / ``cband_n_bootstrap``
+            on the result. When ``False`` those fields stay ``None``. No
+            effect on ``aggregate="overall"`` or on unweighted event-
+            study. ``n_bootstrap`` and ``seed`` (constructor params)
+            control replicate count and RNG; defaults are 999 / ``None``.
 
         Returns
         -------
         HeterogeneousAdoptionDiDResults
         """
-        # ---- aggregate / survey / weights validation ----
+        # ---- aggregate / survey_design / survey / weights validation ----
         if aggregate not in _VALID_AGGREGATES:
             raise ValueError(
                 f"Invalid aggregate={aggregate!r}. Must be one of " f"{_VALID_AGGREGATES}."
             )
-        if survey is not None and weights is not None:
-            raise ValueError(
-                "Pass survey=<SurveyDesign> OR weights=<array>, not both. "
-                "For SurveyDesign-composed inference (PSU, strata, FPC, "
-                "replicate weights), use survey=. For a simple pweight-only "
-                "shortcut, use weights=; it is internally equivalent to "
-                "survey=SurveyDesign(weights=w)."
+        # Three-way mutex on survey_design / survey / weights (data-in pattern).
+        n_set = sum(x is not None for x in (survey_design, survey, weights))
+        if n_set > 1:
+            raise ValueError(HAD_DUAL_KNOB_MUTEX_MSG_DATA_IN)
+
+        # Soft deprecation: route legacy survey=/weights= aliases to
+        # survey_design=. The internal back-end paths (legacy weights= and
+        # survey= routing below) are unchanged; only the entry signature
+        # wraps them. The bit-exact back-compat invariant is preserved
+        # because we only rebind names, not values, and the legacy `survey`
+        # / `weights` variables are re-derived from `survey_design` for
+        # downstream consumption.
+        if survey is not None:
+            warnings.warn(HAD_DEPRECATION_MSG_SURVEY_KWARG, DeprecationWarning, stacklevel=2)
+            survey_design = survey
+        elif weights is not None:
+            warnings.warn(
+                HAD_DEPRECATION_MSG_WEIGHTS_KWARG_HAD_FIT,
+                DeprecationWarning,
+                stacklevel=2,
             )
+            # weights= shortcut preserved as-is on the back end (the
+            # downstream `if weights is not None:` branch consumes the
+            # raw array directly via _aggregate_unit_weights). Don't
+            # rebind survey_design here — the array is not a
+            # SurveyDesign and survey_design= cannot accept arrays.
+        else:
+            # Canonical path: survey_design= may be None or a SurveyDesign
+            # instance. Map back to the internal `survey` variable name
+            # so downstream code (legacy `if survey is not None:` branch)
+            # consumes the input transparently.
+            survey = survey_design
+
+        # Type guard on the data-in surface (PR #376 R8 P1): HAD.fit()
+        # accepts a SurveyDesign that gets resolved against `data` at fit
+        # time; a pre-resolved ResolvedSurveyDesign (or its
+        # make_pweight_design factory output) goes to the array-in pretest
+        # helpers, NOT to fit(). Reject explicitly with migration guidance
+        # rather than letting `survey.resolve(data)` AttributeError or
+        # `survey.weights` (a numpy array on Resolved) be misinterpreted as
+        # a column name. Mirrors the array-in helpers' isinstance-SurveyDesign
+        # rejection in stute_test/yatchew_hr_test/stute_joint_pretest.
+        if survey is not None and not hasattr(survey, "resolve"):
+            raise TypeError(
+                "HeterogeneousAdoptionDiD.fit: `survey_design=` accepts a "
+                "SurveyDesign instance (column-referencing, gets "
+                "`.resolve(data)`'d at fit time) on the data-in estimator "
+                "surface. Got "
+                f"{type(survey).__name__} (no `.resolve()` method). "
+                "If you have a pre-resolved ResolvedSurveyDesign or used "
+                "`make_pweight_design(arr)`, that pattern is for the "
+                "array-in pretest helpers (`stute_test`, `yatchew_hr_test`, "
+                "`stute_joint_pretest`). On HAD.fit, add the weights as a "
+                "column on `data` and pass "
+                "`survey_design=SurveyDesign(weights='col_name', ...)`."
+            )
+
         # Dispatch the event-study path to a dedicated method so the
         # single-period path stays unchanged (Phase 2a contract preserved).
         # Note: event_study returns HeterogeneousAdoptionDiDEventStudyResults

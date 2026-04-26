@@ -151,6 +151,7 @@ from diff_diff.survey import (
     SurveyDesign,
     SurveyMetadata,
     compute_deff_diagnostics,
+    make_pweight_design,
 )
 from diff_diff.staggered import (
     CallawaySantAnna,
@@ -445,6 +446,7 @@ __all__ = [
     "SurveyMetadata",
     "DEFFDiagnostics",
     "compute_deff_diagnostics",
+    "make_pweight_design",
     # Rust backend
     "HAS_RUST_BACKEND",
     # Linear algebra helpers

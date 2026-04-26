@@ -205,7 +205,7 @@ class TestQUGTest:
         from diff_diff import SurveyDesign
 
         d = np.array([0.1, 0.5, 0.9])
-        with pytest.raises(ValueError, match="OR weights=.*not both"):
+        with pytest.raises(ValueError, match="at most one of"):
             qug_test(d, survey=SurveyDesign(weights="w"), weights=np.ones(3))
 
     def test_methodology_pointer_in_message(self):
@@ -2881,7 +2881,7 @@ class TestHADPretestWorkflowSurveyGuards:
         from diff_diff import SurveyDesign
 
         df = self._make_minimal_overall_panel(with_weight_col=True)
-        with pytest.raises(ValueError, match="OR weights=.*not both"):
+        with pytest.raises(ValueError, match="at most one of"):
             did_had_pretest_workflow(
                 df,
                 "y",
@@ -3059,23 +3059,23 @@ class TestStuteTestSurvey:
 
     def test_survey_smoke(self):
         """survey= via trivial ResolvedSurveyDesign produces a finite result."""
-        from diff_diff.survey import _make_trivial_resolved
+        from diff_diff.survey import make_pweight_design
 
         d, dy = self._setup()
         w = np.random.default_rng(7).uniform(0.5, 2.0, size=30)
-        resolved = _make_trivial_resolved(w)
+        resolved = make_pweight_design(w)
         r = stute_test(d, dy, survey=resolved, n_bootstrap=199, seed=0)
         assert np.isfinite(r.cvm_stat)
         assert 0.0 <= r.p_value <= 1.0
 
     def test_mutex_both_raises(self):
         """survey + weights mutex (mirrors workflow + qug_test pattern)."""
-        from diff_diff.survey import _make_trivial_resolved
+        from diff_diff.survey import make_pweight_design
 
         d, dy = self._setup()
         w = np.ones(30)
-        with pytest.raises(ValueError, match="OR weights=.*not both"):
-            stute_test(d, dy, weights=w, survey=_make_trivial_resolved(w), n_bootstrap=199, seed=0)
+        with pytest.raises(ValueError, match="at most one of"):
+            stute_test(d, dy, weights=w, survey=make_pweight_design(w), n_bootstrap=199, seed=0)
 
     def test_replicate_weights_raises(self):
         """Phase 4.5 C MEDIUM #4: replicate-weight survey designs raise
@@ -3167,20 +3167,20 @@ class TestYatchewHRTestSurvey:
         assert 0.0 <= r.p_value <= 1.0
 
     def test_survey_smoke(self):
-        from diff_diff.survey import _make_trivial_resolved
+        from diff_diff.survey import make_pweight_design
 
         d, dy = self._setup()
         w = np.random.default_rng(7).uniform(0.5, 2.0, size=30)
-        r = yatchew_hr_test(d, dy, survey=_make_trivial_resolved(w))
+        r = yatchew_hr_test(d, dy, survey=make_pweight_design(w))
         assert np.isfinite(r.t_stat_hr)
 
     def test_mutex_both_raises(self):
-        from diff_diff.survey import _make_trivial_resolved
+        from diff_diff.survey import make_pweight_design
 
         d, dy = self._setup()
         w = np.ones(30)
-        with pytest.raises(ValueError, match="not both"):
-            yatchew_hr_test(d, dy, weights=w, survey=_make_trivial_resolved(w))
+        with pytest.raises(ValueError, match="at most one of"):
+            yatchew_hr_test(d, dy, weights=w, survey=make_pweight_design(w))
 
     def test_zero_weight_rejected(self):
         """Per Reviewer Question #4: strictly-positive weights required
@@ -3302,7 +3302,7 @@ class TestJointStuteSurvey:
 
         df = self._make_event_study_panel()
         df["w"] = 1.0
-        with pytest.raises(ValueError, match="not both"):
+        with pytest.raises(ValueError, match="at most one of"):
             joint_pretrends_test(
                 df,
                 "y",

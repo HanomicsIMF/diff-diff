@@ -972,13 +972,16 @@ class TestScaffoldingRejections:
             )
 
     def test_survey_bad_type_raises(self):
-        """survey= must be a SurveyDesign-like object with a .weights
-        attribute; a bare string (or any object lacking .weights) raises
-        TypeError front-door."""
+        """survey= must be a SurveyDesign-like object with a `.resolve()`
+        method; a bare string (or any object lacking `.resolve()`) raises
+        TypeError front-door. Updated PR #376 R8 P1: the data-in type
+        guard now runs at the canonical entry and rejects on the
+        `hasattr(survey, "resolve")` check (which catches both bare
+        strings and ResolvedSurveyDesign / make_pweight_design output)."""
         d, dy = _dgp_continuous_at_zero(200, seed=0)
         panel = _make_panel(d, dy)
         est = HeterogeneousAdoptionDiD()
-        with pytest.raises(TypeError, match="SurveyDesign-like"):
+        with pytest.raises(TypeError, match="SurveyDesign"):
             est.fit(
                 panel,
                 "outcome",
@@ -3389,7 +3392,7 @@ class TestHADSurvey:
         panel_with_w = panel.assign(w=row_w)
         sd = SurveyDesign(weights="w")
         est = HeterogeneousAdoptionDiD(design="continuous_at_zero")
-        with pytest.raises(ValueError, match="OR weights"):
+        with pytest.raises(ValueError, match="at most one of"):
             est.fit(
                 panel_with_w,
                 "outcome",
