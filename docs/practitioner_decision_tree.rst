@@ -287,16 +287,18 @@ identification rests on stronger structural assumptions (Design 1).
    # Run the pretest workflow first - it adjudicates which design path
    # your data supports and surfaces assumption violations
    pretests = did_had_pretest_workflow(
-       data, outcome="y", unit="unit", time="period", dose="dose",
+       data, outcome_col="y", unit_col="unit",
+       time_col="period", dose_col="dose",
    )
    print(pretests)
 
    est = HeterogeneousAdoptionDiD()
    results = est.fit(
-       data, outcome="y", unit="unit", time="period", dose="dose",
+       data, outcome_col="y", unit_col="unit",
+       time_col="period", dose_col="dose",
    )
    print(f"Resolved estimand: {results.target_parameter}")
-   print(f"Average lift per unit of dose: {results.coef:.2f}")
+   print(f"Average lift per unit of dose: {results.att:.2f}")
 
 .. note::
 

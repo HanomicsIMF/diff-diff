@@ -478,7 +478,7 @@ HeterogeneousAdoptionDiD (HAD) Issues
 -------------------------------------
 
 "Resolved estimand is not what I expected (WAS vs WAS_d_lower)"
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Problem:** ``HeterogeneousAdoptionDiD`` resolves ``target_parameter`` to
 ``"WAS_d_lower"`` when you expected ``"WAS"`` (or vice versa).
@@ -498,8 +498,8 @@ estimator routes to Design 1 even when you intend a WAS interpretation.
    print((data['dose'] == 0).sum(), "observations at dose=0")
 
    # Check the resolved estimand after fitting
-   results = est.fit(data, outcome='y', unit='unit',
-                     time='period', dose='dose')
+   results = est.fit(data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose')
    print(f"Resolved: {results.target_parameter}")
 
    # If you genuinely have a Design 1' panel but lack dose=0 rows, verify
@@ -523,7 +523,7 @@ This is a correct fallback, not a failure - it just changes the SE regime.
 .. code-block:: python
 
    # Inspect the fit path used
-   print(f"Fit path: {results.fit_path}")  # 'mass_point' indicates fallback
+   print(f"Design: {results.design}")  # 'mass_point' indicates fallback
 
    # The 2SLS sandwich is the correct inference for mass-point designs;
    # accept the fallback unless you can re-bin the dose variable to a
@@ -533,11 +533,10 @@ This is a correct fallback, not a failure - it just changes the SE regime.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Problem:** Calling ``HeterogeneousAdoptionDiD.fit(..., vcov_type="classical")``
-under ``survey_design=`` (or under the deprecated ``survey=`` / ``weights=``
-aliases) raises ``NotImplementedError`` on the mass-point path. The same
-``NotImplementedError`` fires on
-``survey_design=make_pweight_design(weights)`` + ``aggregate="event_study"`` +
-``cband=True``.
+under ``survey_design=SurveyDesign(...)`` (or under the deprecated ``survey=``
+alias) raises ``NotImplementedError`` on the mass-point path. The same
+``NotImplementedError`` fires on the deprecated ``weights=`` shortcut +
+``aggregate="event_study"`` + ``cband=True``.
 
 **Cause:** The per-unit 2SLS influence function returned by the mass-point fit
 is HC1-scaled so that ``compute_survey_if_variance`` and the sup-t bootstrap
@@ -584,8 +583,8 @@ supported in the current release.
                  (data['first_treat'] == 0)]
 
    est = HeterogeneousAdoptionDiD()
-   results = est.fit(subset, outcome='y', unit='unit',
-                     time='period', dose='dose',
+   results = est.fit(subset, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose',
                      aggregate='event_study')
 
 Imputation / Two-Stage DiD Issues

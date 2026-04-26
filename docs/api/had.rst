@@ -46,18 +46,30 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
    - **Unweighted** - continuous paths use the CCT-2014 weighted-robust SE
      from the in-house ``lprobust`` port; the mass-point path uses a
      structural-residual 2SLS sandwich. No cross-horizon covariance.
-   - **``survey_design=make_pweight_design(weights)``** (pweight-only
-     shortcut) - continuous paths reuse the CCT-2014 SE; the mass-point
-     path uses an analytical weighted 2SLS sandwich (``classical`` /
-     ``hc1`` only - ``hc2`` / ``hc2_bm`` raise ``NotImplementedError``
-     pending a 2SLS-specific leverage derivation).
-   - **``survey_design=SurveyDesign(...)``** (full TSL with strata / PSU
-     / FPC) - both paths compose Binder (1983) Taylor-series linearization
-     with ``df_survey`` threaded into ``safe_inference``.
+   - **``weights=np.ndarray`` shortcut (deprecated)** - continuous paths
+     reuse the CCT-2014 SE; the mass-point path uses an analytical
+     weighted 2SLS sandwich (``classical`` / ``hc1`` only - ``hc2`` /
+     ``hc2_bm`` raise ``NotImplementedError`` pending a 2SLS-specific
+     leverage derivation). Yields ``variance_formula="pweight"`` /
+     ``"pweight_2sls"``.
+   - **``survey_design=SurveyDesign(weights="col", ...)``** (canonical;
+     accepts strata / PSU / FPC) - both paths compose Binder (1983)
+     Taylor-series linearization with ``df_survey`` threaded into
+     ``safe_inference``. Yields ``variance_formula="survey_binder_tsl"``
+     / ``"survey_binder_tsl_2sls"``.
 
-   The deprecated ``survey=`` and ``weights=`` aliases still resolve to
-   the same paths with a ``DeprecationWarning`` (removal queued for the
-   next minor release).
+   The two weighted paths currently produce different SE families on this
+   estimator (CCT-2014 / 2SLS pweight-sandwich vs Binder-TSL); the
+   deprecated ``weights=`` and ``survey=`` aliases will be removed in the
+   next minor release, at which point the long-term unification onto a
+   single SE contract under ``survey_design=`` lands. (Tracked in
+   ``TODO.md``; the deprecation warning emitted by ``HeterogeneousAdoptionDiD.fit``
+   spells the migration out per call site.) On array-in HAD pretest
+   helpers (``stute_test``, ``yatchew_hr_test``, ``stute_joint_pretest``,
+   ``qug_test``) the pweight-only shortcut is
+   ``survey_design=make_pweight_design(weights)``; data-in surfaces use
+   ``survey_design=SurveyDesign(weights="col_name", ...)`` against
+   ``data`` instead.
 
    A simultaneous confidence band (sup-t) is available only on the
    **weighted event-study path** via ``cband=True``. Joint cross-horizon
@@ -66,11 +78,11 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
 
    **Mass-point ``vcov_type="classical"`` deviation.** The mass-point
    ``survey_design=SurveyDesign(...)`` paths (static and event-study) and
-   the ``survey_design=make_pweight_design(weights)`` +
-   ``aggregate="event_study"`` + ``cband=True`` path reject
-   ``vcov_type="classical"`` with ``NotImplementedError``. The per-unit
-   2SLS influence function returned by the mass-point fit is HC1-scaled
-   so that ``compute_survey_if_variance`` and the sup-t bootstrap target
+   the deprecated ``weights=`` + ``aggregate="event_study"`` +
+   ``cband=True`` path reject ``vcov_type="classical"`` with
+   ``NotImplementedError``. The per-unit 2SLS influence function returned
+   by the mass-point fit is HC1-scaled so that
+   ``compute_survey_if_variance`` and the sup-t bootstrap target
    ``V_HC1`` consistently; mixing it with a classical analytical SE
    would silently report a ``V_HC1``-targeted variance under a
    ``classical`` label. Use ``vcov_type="hc1"`` (or leave it unset with

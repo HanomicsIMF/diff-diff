@@ -394,15 +394,15 @@ before estimation; see :doc:`api/had` for the full API and SE-regime contract.
 
    from diff_diff import HeterogeneousAdoptionDiD, did_had_pretest_workflow
 
-   pretests = did_had_pretest_workflow(data, outcome='y', unit='unit',
-                                       time='period', dose='dose')
+   pretests = did_had_pretest_workflow(data, outcome_col='y', unit_col='unit',
+                                       time_col='period', dose_col='dose')
 
    est = HeterogeneousAdoptionDiD()
-   results = est.fit(data, outcome='y', unit='unit',
-                     time='period', dose='dose')
+   results = est.fit(data, outcome_col='y', unit_col='unit',
+                     time_col='period', dose_col='dose')
 
    print(f"Resolved estimand: {results.target_parameter}")
-   print(f"Estimate: {results.coef:.3f}")
+   print(f"Estimate: {results.att:.3f}")
 
 Efficient DiD
 ~~~~~~~~~~~~~
@@ -664,7 +664,7 @@ differences helps interpret results and choose appropriate inference.
      - Uses influence-function-based SEs by default. Use ``n_bootstrap=199`` (or higher) for multiplier bootstrap inference with proper CIs.
    * - ``HeterogeneousAdoptionDiD``
      - Path-dependent (CCT-2014 / 2SLS / Binder TSL)
-     - Three SE regimes per :doc:`api/had`. **Unweighted**: continuous-dose paths use the CCT-2014 weighted-robust SE from the in-house ``lprobust`` port; mass-point uses a 2SLS sandwich. **``survey_design=make_pweight_design(weights)``** (pweight shortcut): continuous reuses CCT-2014; mass-point uses analytical weighted 2SLS (``classical`` / ``hc1`` only). **``survey_design=SurveyDesign(...)``** (full TSL): both paths compose Binder (1983) Taylor-series linearization. Per-horizon CIs are pointwise; sup-t bands available only on the weighted event-study path via ``cband=True``. The deprecated ``survey=`` / ``weights=`` aliases still resolve with a DeprecationWarning.
+     - Three SE regimes per :doc:`api/had`. **Unweighted**: continuous-dose paths use the CCT-2014 weighted-robust SE from the in-house ``lprobust`` port; mass-point uses a 2SLS sandwich. **Deprecated ``weights=`` shortcut**: continuous reuses CCT-2014; mass-point uses analytical weighted 2SLS (``classical`` / ``hc1`` only); yields ``variance_formula="pweight"`` / ``"pweight_2sls"``. **``survey_design=SurveyDesign(weights="col", ...)``**: both paths compose Binder (1983) Taylor-series linearization (``"survey_binder_tsl"`` / ``"survey_binder_tsl_2sls"``). The two weighted families differ on this estimator until the next-minor unification lands. Per-horizon CIs are pointwise; sup-t bands available only on the weighted event-study path via ``cband=True``.
    * - ``SunAbraham``
      - Cluster-robust (unit level)
      - Clusters at unit level by default. Specify ``cluster`` to override. Use ``n_bootstrap`` for pairs bootstrap inference.
