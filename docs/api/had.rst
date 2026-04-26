@@ -51,8 +51,12 @@ Unit Remains Untreated" (arXiv:2405.04465v6), which:
      weighted 2SLS sandwich (``classical`` / ``hc1``; CR1 when
      ``cluster=`` is supplied; ``hc2`` / ``hc2_bm`` raise
      ``NotImplementedError`` pending a 2SLS-specific leverage
-     derivation). Yields ``variance_formula="pweight"`` /
-     ``"pweight_2sls"``.
+     derivation). The mass-point + ``aggregate="event_study"`` +
+     ``cband=True`` sub-path additionally rejects an effective
+     ``classical`` vcov (so plain ``cluster=`` with the default
+     ``robust=False`` triggers the classical-default trap below;
+     pass ``vcov_type="hc1"`` or ``robust=True`` to use CR1 there).
+     Yields ``variance_formula="pweight"`` / ``"pweight_2sls"``.
    - **``survey_design=SurveyDesign(weights="col", ...)``** (canonical;
      accepts strata / PSU / FPC) - both paths compose Binder (1983)
      Taylor-series linearization with ``df_survey`` threaded into
