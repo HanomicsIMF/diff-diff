@@ -699,6 +699,60 @@ scenarios$multi_path_reversible_by_path_placebo <- list(
   results = extract_dcdh_by_path(res15, n_effects = 3, n_placebos = 2)
 )
 
+# Scenario 16: multi_path_reversible + by_path=3 + controls="X1" (Phase 3
+# Wave 3 #5: by_path + DID^X residualization). Same deterministic DGP
+# and n_periods=10 as scenarios 14/15, with a confounding covariate X1
+# added via the same `add_covariate` helper used by scenario 10's
+# `joiners_only_controls`. **R re-runs `did_multiplegt_main()` per path**
+# with a path-restricted subsample (path's switchers + same-baseline
+# not-yet-treated controls), so its per-baseline OLS residualization
+# coefficients can vary per path (verified against
+# `chaisemartinPackages/did_multiplegt_dyn` source —
+# `R/R/did_multiplegt_dyn.R` lines 393-411 dispatch the per-path loop;
+# `did_multiplegt_by_path` is a path-classifier preprocessor only).
+# Python residualizes once on the full panel before path enumeration,
+# then disaggregates per path. **The two strategies coincide on
+# single-baseline switcher panels** (every switcher shares D_{g,1}=0)
+# because R's per-path control pool then equals the global control pool
+# # — `multi_path_reversible` is built precisely for this property, so
+# per-path event-study point estimates and switcher counts must match R
+# bit-exactly on the one-observation-per-(g,t) DGP this generator
+# produces. (On panels with multiple observations per `(g, t)` cell, the
+# library's equal-cell-weighting first stage diverges from R's `N_gt`-
+# weighted first stage per the existing DID^X cell-weighting deviation
+# in `docs/methodology/REGISTRY.md` "Note (Phase 3 DID^X covariate
+# adjustment)" — that deviation is independent of the by_path lift.)
+# Per-path SE inherits the documented cross-path cohort-sharing
+# deviation from R for `path_effects`. On multi-baseline switcher panels
+# the residualization coefficients can diverge per path between Python
+# and R; the production fit emits a `UserWarning` in that configuration.
+# Single covariate keeps the scenario tight; multi-covariate is
+# exercised via internal regression tests.
+cat("  Scenario 16: multi_path_reversible_by_path_controls\n")
+d16 <- gen_reversible(n_groups = N_GOLDEN, n_periods = 10,
+                      pattern = "multi_path_reversible", seed = 116,
+                      L_max = 3)
+d16 <- add_covariate(d16, seed = 216, x_effect = 1.5)
+res16 <- did_multiplegt_dyn(
+  df = d16, outcome = "outcome", group = "group", time = "period",
+  treatment = "treatment", effects = 3, by_path = 3, controls = "X1",
+  ci_level = 95
+)
+scenarios$multi_path_reversible_by_path_controls <- list(
+  data = list(
+    group = as.numeric(d16$group),
+    period = as.numeric(d16$period),
+    treatment = as.numeric(d16$treatment),
+    outcome = as.numeric(d16$outcome),
+    X1 = as.numeric(d16$X1)
+  ),
+  params = list(pattern = "multi_path_reversible",
+                n_switcher_groups = N_GOLDEN, n_realized_groups = N_GOLDEN + 40L,
+                n_periods = 10, seed = 116, effects = 3, by_path = 3,
+                controls = "X1", ci_level = 95),
+  results = extract_dcdh_by_path(res16, n_effects = 3)
+)
+
 # ---------------------------------------------------------------------------
 # Write output
 # ---------------------------------------------------------------------------

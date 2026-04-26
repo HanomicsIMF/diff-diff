@@ -408,10 +408,36 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         the object of interest) and ``L_max >= 1`` (the path window
         depends on ``L_max``). Binary treatment only — non-binary
         treatment + ``by_path`` is deferred. Also incompatible with
-        ``controls``, ``trends_linear``, ``trends_nonparam``,
-        ``heterogeneity``, ``design2``, ``honest_did``, and
-        ``survey_design`` (each combination raises
-        ``NotImplementedError`` in the current release).
+        ``trends_linear``, ``trends_nonparam``, ``heterogeneity``,
+        ``design2``, ``honest_did``, and ``survey_design`` (each
+        combination raises ``NotImplementedError`` in the current
+        release).
+
+        Compatible with ``controls`` (DID^X residualization) -- the
+        per-baseline OLS residualization runs once on first-differenced
+        ``Y`` BEFORE path enumeration, so per-path point estimates,
+        bootstrap SE, per-path placebos, and per-path sup-t bands all
+        consume the residualized ``Y_mat`` automatically (Frisch-
+        Waugh-Lovell). Per-period effects remain unadjusted, consistent
+        with the existing ``controls`` + per-period DID contract.
+
+        **Deviation from R on multi-baseline switcher panels:** R
+        ``did_multiplegt_dyn(..., by_path, controls)`` re-runs the
+        per-baseline residualization on each path's restricted
+        subsample (path's switchers + same-baseline not-yet-treated
+        controls), so its residualization coefficients vary per path
+        when switchers have different baseline values. Our global-
+        residualization architecture coincides with R on single-
+        baseline panels (every switcher shares the same ``D_{g,1}``)
+        and per-path point estimates match exactly on the one-
+        observation-per-``(g, t)`` regime; on multi-observation-per-
+        cell panels the existing DID^X cell-weighting deviation from
+        R applies (see ``docs/methodology/REGISTRY.md`` "Note (Phase
+        3 DID^X covariate adjustment)"; independent of the by_path
+        lift). On multi-baseline switcher panels, point estimates can
+        diverge — a ``UserWarning`` is emitted at fit-time when this
+        configuration is detected. SE inherits the cross-path cohort-
+        sharing deviation from R documented for ``path_effects``.
 
         Compatible with ``n_bootstrap > 0`` -- the top-k paths are
         enumerated once on the observed data (paths held fixed across
@@ -985,11 +1011,6 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                     "[F_g - 1, F_g - 1 + L_max] and therefore depends on "
                     "the event-study horizon. Set L_max when calling fit()."
                 )
-            if controls is not None:
-                raise NotImplementedError(
-                    "by_path combined with controls (DID^X residualization) "
-                    "is deferred to a future release."
-                )
             if trends_linear:
                 raise NotImplementedError(
                     "by_path combined with trends_linear (DID^{fd}) is "
@@ -1450,9 +1471,14 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
         #
         # When controls are specified, residualize Y_mat by partialling
         # out covariate effects per baseline treatment group. This
-        # transforms Y_mat in-place so ALL downstream DID computations
-        # (per-period and per-group multi-horizon) automatically produce
-        # covariate-adjusted estimates. See Web Appendix Section 1.2.
+        # transforms Y_mat so the per-group multi-horizon DID path
+        # (event_study_effects, overall_att, joiners/leavers, by_path
+        # surfaces, placebos, sup-t bands) automatically produces
+        # covariate-adjusted estimates. The per-period DID path
+        # (per_period_effects) intentionally remains on raw outcomes —
+        # it uses binary joiner/leaver categorization and is not part
+        # of the DID^X contract per REGISTRY.md "Note (Phase 3 DID^X
+        # covariate adjustment)". See Web Appendix Section 1.2.
         # ------------------------------------------------------------------
         covariate_diagnostics: Optional[Dict[str, Any]] = None
         _switch_metadata_computed = False
@@ -1472,6 +1498,63 @@ class ChaisemartinDHaultfoeuille(ChaisemartinDHaultfoeuilleBootstrapMixin):
                 _compute_group_switch_metadata(D_mat, N_mat)
             )
             _switch_metadata_computed = True
+
+            # by_path + controls residualization-sample deviation from R.
+            # R's `did_multiplegt_dyn(..., by_path, controls)` calls
+            # `did_multiplegt_main()` once per path with `df_main` filtered
+            # to: rows of the path's switchers OR rows where
+            # `yet_to_switch=1 AND baseline matches the path's baseline`
+            # (R/R/did_multiplegt_dyn.R lines 401-405). Inside the per-path
+            # `did_multiplegt_main()` call, the per-baseline first-stage
+            # residualization regression uses `(g, t)` cells where g's
+            # treatment hasn't changed yet at t. Critically, R's path-
+            # restricted subset INCLUDES the pre-switch rows of OTHER-path
+            # switchers via the `yet_to_switch=1 AND baseline matches`
+            # clause, so the first-stage SAMPLE that R uses for path B
+            # equals: pre-switch rows of all switchers with matching
+            # baseline + all rows of never-switchers with matching
+            # baseline. This is BIT-IDENTICAL to the first-stage sample
+            # we use under our global residualization — first-stage
+            # coefficients (and therefore residualized outcomes) coincide,
+            # and per-path point estimates match R exactly **under single-
+            # baseline switcher panels** (every switcher has the same
+            # `D_{g,1}`, regardless of how `F_g` varies across paths or
+            # within a path). Empirical confirmation: the
+            # `multi_path_reversible_by_path_controls` R-parity scenario
+            # has 4 paths with switcher `F_g` values spanning [0..6] under
+            # `D_{g,1}=0` for every switcher, and Python matches R to
+            # rtol ~1e-11 across all `(path, horizon)` cells.
+            #
+            # On MULTI-baseline switcher panels the per-baseline regression
+            # coefficients diverge per path under R (R's per-path subset
+            # for path B drops switchers whose baseline differs from B's
+            # baseline), so point estimates can diverge between Python and
+            # R — warn the user explicitly. The check filters to switcher
+            # groups only (never-switchers do not contribute to "switcher
+            # baseline" multiplicity even if they appear at multiple
+            # `D_{g,1}` values across the never-treated / always-treated
+            # control mix). SE inheritance (cross-path cohort-sharing) is
+            # documented separately in REGISTRY.md.
+            if self.by_path is not None:
+                _switcher_mask = first_switch_idx_arr >= 0
+                if _switcher_mask.any():
+                    _switcher_baselines = baselines[_switcher_mask]
+                    if np.unique(_switcher_baselines).size > 1:
+                        warnings.warn(
+                            "by_path + controls: switcher baselines D_{g,1} "
+                            "take multiple values in this panel. Python "
+                            "residualizes once on the full panel before path "
+                            "enumeration; R `did_multiplegt_dyn(..., by_path, "
+                            "controls)` re-runs residualization per path on "
+                            "the path-restricted subsample, so per-path point "
+                            "estimates can diverge between Python and R on "
+                            "this panel. See `docs/methodology/REGISTRY.md` "
+                            "(`Note (Phase 3 by_path ...)` -> Per-path "
+                            "covariate residualization) for the full "
+                            "deviation contract.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
 
             Y_mat_residualized, covariate_diagnostics, _failed_baselines = (
                 _compute_covariate_residualization(
