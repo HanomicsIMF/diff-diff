@@ -515,28 +515,35 @@ is meaningfully positive relative to the dose scale.
    # the dose-variable encoding (e.g. log-transformed doses where 0 was
    # mapped to a small positive value larger than 1% of the median).
 
-"Mass-point fit fallback"
-~~~~~~~~~~~~~~~~~~~~~~~~~
+"Mass-point design selected"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Problem:** HAD reports that the ``mass_point`` fit path was used instead of
-the expected ``continuous_at_zero`` or ``continuous_near_d_lower`` path.
+**Problem:** HAD reports that the ``mass_point`` design was selected
+instead of ``continuous_at_zero`` or ``continuous_near_d_lower``.
 
-**Cause:** Local-linear regression at the dose-support boundary requires a
-sufficiently dense neighborhood. When the dose distribution has a heavy
-mass-point at the boundary (e.g. many units at ``dose = d_lower``), HAD falls
-back to the structural-residual 2SLS sandwich derived in dCDH 2026 Appendix.
-This is a correct fallback, not a failure - it just changes the SE regime.
+**Cause:** ``mass_point`` is a distinct Design 1 estimator path from the
+dCDH 2026 paper (Section 3.2.4), not a fallback from the continuous
+local-linear fits. ``_detect_design()`` resolves to ``mass_point`` when the
+modal fraction at ``d.min()`` exceeds 2%, signalling a heavy point mass at
+the dose-support boundary. On this path both the point estimate and the SE
+differ from the continuous paths: the estimator uses the Wald-IV
+sample-average ratio with binary instrument ``Z_g = 1{D_{g,2} > d_lower}``
+- ``(Ybar_{Z=1} - Ybar_{Z=0}) / (Dbar_{Z=1} - Dbar_{Z=0})`` - and inference
+uses the structural-residual 2SLS sandwich (the local-linear / CCT-2014
+SE path is not used here).
 
 **Solutions:**
 
 .. code-block:: python
 
-   # Inspect the fit path used
-   print(f"Design: {results.design}")  # 'mass_point' indicates fallback
+   # Inspect the resolved design
+   print(f"Design: {results.design}")  # 'mass_point' here
 
-   # The 2SLS sandwich is the correct inference for mass-point designs;
-   # accept the fallback unless you can re-bin the dose variable to a
-   # smoother distribution.
+   # The mass-point Wald-IV estimator + structural-residual 2SLS
+   # sandwich is the canonical Section 3.2.4 path for designs with a
+   # heavy boundary point mass; accept the resolution unless you can
+   # re-bin the dose variable so the modal fraction at d.min() drops
+   # below 2% (then the detector picks continuous_near_d_lower).
 
 "NotImplementedError on survey + mass-point + vcov_type='classical'"
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
